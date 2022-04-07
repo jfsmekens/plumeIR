@@ -1,0 +1,35 @@
+# ----------------------------------------------------------------------------------------------------------------------------------------------------
+#  							Initialisation file for plumeIR
+# ----------------------------------------------------------------------------------------------------------------------------------------------------
+*   species	:	conc	:	size 	:	sigma	:	vmin	:	vmax	:	compo	# Comments
+# Units for gas	:       [ppm]	:	-	:	-	:	-	:	-	:		#
+# Units for aero	:      [g.m^-3]	:	um	:	n/a	:	um	:	um	:		#
+# ----------------------------------------------------------------------------------------------------------------------------------------------------
+# ------------------------
+# GASES
+# ------------------------
+
+# Atmospheric gases
+H2O		:	19000	:	None	:	None	:	None	:	None	:	None	
+CO2		:	400	:	None	:	None	:	None	:	None	:	None	
+O3		:	0.01	:	None	:	None	:	None	:	None	:	None
+N2O		:	0.32	:	None	: 	None	:	None	:	None	:	None
+CH4		: 	1.7	:	None	:	None	:	None	:	None	:	None
+
+# Volcanic gases
+SO2		:	0.5	:	None	:	None	:	None	:	None	:	None
+HCl		:	0.01	:	None	:	None	:	None	:	None	:	None
+HF		:	0.01	:	None	:	None	:	None	:	None	:	None
+CO		:	0.01	:	None	:	None	:	None	:	None	:	None
+NH3		:	0.01	:	None	:	None	:	None	:	None	:	None
+SiF4		: 	0.01	:	None	: 	None	:	None	:	None	:	None
+H2S		: 	0.01	:	None	: 	None	:	None	:	None	:	None
+
+# ------------------------
+# AEROSOLS
+# ------------------------
+
+H2SO4		: 	5E-4	:    	0.5	: 	1.5	:	0.1	:	10.0	:	72	# composition in wt. % H2SO4
+ASH		:	1E-3	:	2.0	:	1.5	:	0.1	:	200.0	:	53	# composition in wt. % SiO2
+WATER		:	5E-4	:	0.5	:	1.5	:	0.1	:	10.0	:	None	# Water droplets
+ICE		:	1E-3	:	2.0	:	1.5	:	0.1	:	10.0	:	None	# Ice droplets
