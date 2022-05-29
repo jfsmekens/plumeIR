@@ -93,10 +93,10 @@ def read_midac(fname):
 
     # Extract acquisition time
     try:
-        dtime = findDateinSPC(spec)
+        dtime = findDateinName(fname)
     except:
         try:
-            dtime = findDateinName(fname)
+            dtime = findDateinSPC(spec)
         except:
             dtime = None
 

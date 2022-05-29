@@ -24,6 +24,11 @@ from tqdm import tqdm
 from spectra import read_spectrum
 from initialise import initialiseFit, readStandard
 from plotting import *
+from atmosphere import writeAtm
+
+dark_mode = False
+if dark_mode:
+    plt.style.use('dark_background')
 
 # ======================================================================================================================
 #                                     Set up log output to standard output
@@ -51,13 +56,17 @@ logger.addHandler(handler2)
 # ======================================================================================================================
 #                     Initiate the retrieval from config file and define run behaviour
 # ======================================================================================================================
+logger.info('########## Retrieval run initiated - %s %s ###########' % (logotext, versiontext))
 # Can be initiated by pointing to a file directly
-config_name = None     # Where to get the config from
+config_name = './plumeIRconfig_emission.txt'     # Where to get the config from
+config_name = None
 if config_name is not None:
     logger.info('User supplied config file: %s' % config_name)
 
 # Or by using a data directory where the config file can be found
-datadir = './data/Emission_170322_Vulcano/1/'
+# datadir = './data/Emission_170322_Vulcano/6/'
+datadir = './data/2021-08-11/'
+# datadir = None
 if datadir is not None:
     config_list = glob(datadir + '*plumeIR*config*.txt')
     if len(config_list) == 0:
@@ -72,8 +81,9 @@ if datadir is not None:
         logger.info('Found %i config files. Using most recent: %s' % (len(config_list), config_name))
 
 # Visual outputs during run
+force_reference = False      # Force a rerun of the reference file even if it already exists
 plot_reference = False      # Plot spectral reference for each fit?
-write_analysis = True       # Write the analysis results in the progress bar?
+write_analysis = False       # Write the analysis results in the progress bar?
 plot_analysis = True        # Display results in the Analysis canvas?
 scroll = 50                 # How many spectra to display at any one time
 if not plot_analysis:
@@ -84,10 +94,10 @@ plot_full_spectrum = False  # Display results in the Full Spectrum canvas
 # Visual outputs after analysis
 plot_results = True         # Display results at the end of the analysis
 if plot_results:
-    which = 'all'       # 'ts', 'ratios' or 'all
+    which = 'all'       # 'ts', 'ratios' or 'all'
     targets = 'all'     # List of targets to include in plots or 'all'
     ratios = 'all'      # List of ratios to include in plots or 'all
-    use_cmap = False    # Color ratio plots by a 3rd quantity?
+    use_cmap = False    # Color ratio plots by a 3rd quantity?df
     color_by = 'so2:h2so4'  # Which quantity? Any of the target gases or ratios (case insensitive)
     errorbar = True     # Plot error as errorbars? If not the error is shown as a shaded area in time series instead
     window = 10         # Moving window to calculate time series of ratios
@@ -95,7 +105,6 @@ if plot_results:
 
 # Save results to disk
 save_results = False        # Save results to disk? (includes dataframes as .csv and .xlsx and plots as .png)
-save_full_results = False   # Save full results? (FitResult objects as .pkl)
 save_frames = False         # Save individual frames during analysis?
 
 
@@ -104,9 +113,7 @@ save_frames = False         # Save individual frames during analysis?
 # ======================================================================================================================
 # Initialize fit from config file
 logger.info('Reading fit parameters from config file')
-config, geometry, params, retrieval, analysers = initialiseFit(config_name)
-std = readStandard()
-acid = std['H2SO4']['compo'] * 1e-2
+config, geometry, params, retrieval, analysers = initialiseFit(config_name, force_ref=force_reference)
 
 # Extract total number of spectra, fits, targets and ratios
 n_spec = config['n_spec']
@@ -178,6 +185,9 @@ cols += ['MAX RMSE', 'MIN R2']
 # Create empty summary dataframe
 df_sum = pd.DataFrame(index=np.arange(n_spec), columns=cols)
 
+# Create empty list to store full results
+full_results = []
+
 # ======================================================================================================================
 #                                               Loop through files
 # ======================================================================================================================
@@ -234,9 +244,9 @@ for i, fname in enumerate(config['DATA']['spec_list']):
                 val = p.fit_val
                 err = p.fit_err
                 scd1 = val * p.ref_column
-                scd2 = mcm2gm2(scd1, name.replace('_pl', ''))
+                scd2 = mcm2gm2(scd1, name)
                 err1 = err * p.ref_column
-                err2 = mcm2gm2(err1, name.replace('_pl', ''))
+                err2 = mcm2gm2(err1, name)
                 # Add to row
                 row_n += [val, err, scd1, err1, scd2, err2]
                 # If it's a target species, also add to summary row
@@ -248,8 +258,8 @@ for i, fname in enumerate(config['DATA']['spec_list']):
                 err = p.fit_err
                 scd2 = val * p.ref_column
                 err2 = err * p.ref_column
-                scd1 = gm2mcm2(scd2, name.replace('_pl', ''))
-                err1 = gm2mcm2(err2, name.replace('_pl', ''))
+                scd1 = gm2mcm2(scd2 * p.ref_comp, name)
+                err1 = gm2mcm2(err2 * p.ref_comp, name)
                 # Add to row
                 row_n += [val, err, scd1, err1, scd2, err2]
                 # If it's a target species, also add to summary row
@@ -298,12 +308,17 @@ for i, fname in enumerate(config['DATA']['spec_list']):
         pbar.set_postfix_str("; ".join(postfix) + '; %i failed' % fails)
 
     # ---------------------------------------------------------------------
-    # Save dataframes to csv files
+    # Save dataframes to csv files, full results to pkl file
     # ---------------------------------------------------------------------
     if save_results:
         for n in range(n_fits):
             df[n].to_csv(outnames[n])
         df_sum.to_csv(outnames[-1])
+
+        full_results.append(results)
+        outname = outdir + fitname + '_RAW.pkl'
+        with open(outname, 'wb') as f:
+            pickle.dump(full_results, f)
 
     pbar.update()
 
@@ -325,21 +340,32 @@ if save_results:
 
     logger.info('Analysis finished! Results saved to: %s' % outname)
 
-    # Save a copy of the config file to data directory
-    local_config_fname = outdir + fitname + '_config.txt'
+    # Save a copy of the config file to results directory
+    outname = outdir + fitname + '_config.txt'
     with open(config_name) as f:
         lines = f.readlines()
-    with open(local_config_fname, 'w') as f:
+    with open(outname, 'w') as f:
         for line in lines:
             f.write(line)
     
-    # Save a copy of the log file to data directory
-    local_log_fname = outdir + fitname + '_log.txt'
+    # Save a copy of the log file to results directory
+    outname = outdir + fitname + '_log.txt'
     with open('./plumeIRlog.txt') as f:
         lines = f.readlines()
-    with open(local_log_fname, 'w') as f:
+    with open(outname, 'w') as f:
         for line in lines:
             f.write(line)
+
+    # Save a copy of the reference(s) file to results directory
+    for analyser in analysers:
+        outname = outdir + fitname + '_%s_reference.pkl' % analyser.name
+        with open(outname, 'wb') as f:
+            pickle.dump(analyser.reference, f)
+
+    if analyser.type in ['solar', 'emission']:
+        outname = outdir + fitname + '_referenceAtm.atm'
+        writeAtm(analyser.geometry.atm, outname)
+
         
 else:
     logger.info('Analysis finished! Save mode was off. Run again to save results')
@@ -351,10 +377,6 @@ if plot_results:
     plotResults(df_all, config=config, geometry=geometry, targets=targets, ratios=ratios, which=which, use_cmap=use_cmap,
                 color_by=color_by, window=window, plot_individual=plot_individual, save=save_results, outdir=outdir)
 
-if save_full_results:
-    outname = outdir + fitname + '_RAW.pkl'
-    with open(outname, 'wb') as f:
-        pickle.dump(results, f)
 
 
 

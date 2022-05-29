@@ -13,6 +13,7 @@ data_dir		:	./data/2021-08-11/								()
 
 filter_files	:	True			# Set to true if you want to keep only some spectra	()
 filter_string	:	vent			# Only keep spectra with this string in the name		()
+filter_ext	:	None			# Only keep files with this extension			()
 max_spec		:	5000			# Maximum number of spectra				()
 scroll		:	50			# Maximum number of results displayed at one time		()
 
@@ -94,7 +95,7 @@ fit		:	True			# Use this fit?						()
 fit_window	:	700, 1300		# Fit window			[cm-1]			()
 atm_gases	:	H2O, N2O, CH4, CO2 	# List of atmospheric gases				()
 plume_gases	:	SO2			# List of plume gases					()
-plume_aero	: 	H2SO4			# List of plume aerosols					()
+plume_aero	: 	H2SO4, WATER			# List of plume aerosols					()
 targets		:	H2SO4			# Target species						()
 polydeg		:	None
 
@@ -104,12 +105,14 @@ polydeg		:	None
 
 *FIT1			# Fit for SO2 only
 
-fit		:	False			# Use this fit?						()
-fit_window	:	2400, 2600		# Fit window			[cm-1]			()
-atm_gases	:	H2O, N2O, CH4		# List of atmospheric gases				()
+fit		:	True			# Use this fit?						()
+fit_window	:	2400, 2550		# Fit window			[cm-1]			()
+atm_gases	:	H2O, N2O, CH4, CO2		# List of atmospheric gases				()
 plume_gases	:	SO2			# List of plume gases					()
 plume_aero	: 	None			# List of plume aerosols					()
 targets		:	SO2			# Target species						()
+polydeg		:	None
+
 
 # ------------------------
 # FIT2 section
@@ -118,11 +121,11 @@ targets		:	SO2			# Target species						()
 *FIT2			# Fit for HCl (expand to include SO2)
 
 fit		:	True			# Use this fit?						()
-fit_window	:	2400, 2900		# Fit window			[cm-1]			()
+fit_window	:	2600, 2900		# Fit window			[cm-1]			()
 atm_gases	:	H2O, N2O, CH4, CO2		# List of atmospheric gases				()
-plume_gases	:	SO2, HCl			# List of plume gases					()
+plume_gases	:	HCl			# List of plume gases					()
 plume_aero	: 	None			# List of plume aerosols					()
-targets		:	SO2, HCl			# Target species						()
+targets		:	HCl			# Target species						()
 polydeg		:	None
 
 

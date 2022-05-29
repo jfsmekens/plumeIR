@@ -53,10 +53,11 @@ def makeAnalysisCanvas(config):
     # How many fits are there?
     fit_type = config['GEOMETRY']['type']
     n_fits = config['n_fits']
-    
+
     # What are the target gases?
     targets = config['TARGET']['targets']
     n_targets = len(targets)
+    fit_titles = [config['FIT%i' % i]['targets'] for i in range(n_fits + 1) if config['FIT%i' % i]['fit']]
     
     # Which ratios are we plotting?
     ratios = config['TARGET']['ratios']
@@ -137,6 +138,10 @@ def makeAnalysisCanvas(config):
     # Titles, axes labels and legends
     # ---------------------------------------------------------------------
     # Spectral plots
+    # Display title
+    for i in range(n_fits):
+        ax1[i].set_title(fit_titles[i], fontweight='bold', fontstyle='italic')
+
     # Label axis only on the left one
     ax1[0].set(ylabel='Spectrum')
     ax2[0].set(ylabel='Residual')
@@ -180,7 +185,7 @@ def makeAnalysisCanvas(config):
 #                                        Update the fitting plots
 # ======================================================================================================================
 def updateAnalysisCanvas(canvas, step, config, results, dataframe, geometry,
-                         save=False, outdir='./plots/', scroll=100, plotmass=False, which_H2SO4='SA'):
+                         save=False, outdir='./plots/', scroll=100, plotmass=False):
     """
     This function updates the Analysis plot canvas created by makeAnalysisCanvas with results as they come in
 
@@ -221,9 +226,10 @@ def updateAnalysisCanvas(canvas, step, config, results, dataframe, geometry,
 
     # Update title
     if results[-1].dtime is not None:
-        title.set_text('SPECTRUM %i: %s' % (step + 1, datetime.strftime(results[-1].dtime, '%Y/%m/%d - %H:%M:%S')))
+        title.set_text('SPECTRUM %i of %i: %s' % (step + 1, config['n_spec'],
+                                                  datetime.strftime(results[-1].dtime, '%Y/%m/%d - %H:%M:%S')))
     else:
-        title.set_text('SPECTRUM %i: no timestamp' % (step + 1))
+        title.set_text('SPECTRUM %i of %i: no timestamp' % (step + 1, config['n_spec']))
 
     # Define axes labels based on what type of spectrum it is
     if all([results[n].spec_type == 'sbm' for n in range(config['n_fits'])]):
@@ -280,15 +286,15 @@ def updateAnalysisCanvas(canvas, step, config, results, dataframe, geometry,
                 xgas = config['TARGET']['ratios'][n].split(':')[1]      # X coordinate species
                 ygas = config['TARGET']['ratios'][n].split(':')[0]      # Y coordinate species
                 force_mass = \
-                    not plotmass and any([gas in ['H2SO4', 'ASH'] for gas in config['TARGET']['ratios'][n].split(':')])
+                    not plotmass and any([gas in ['ASH', 'WATER', 'H2SO4'] for gas in config['TARGET']['ratios'][n].split(':')])
                 if plotmass or force_mass:
-                    legtype = 'mass'
+                    legtype = '[$g.m^{-2}$]'
                     xdata_all = dataframe[xgas + '_scd [g.m^-2]'][0:step + 1].astype(float)
                     ydata_all = dataframe[ygas + '_scd [g.m^-2]'][0:step + 1].astype(float)
                     xdata = xdata_all[start:step + 1]
                     ydata = ydata_all[start:step + 1]
                 else:
-                    legtype = 'molar'
+                    legtype = '[$molec.cm^{-2}$]'
                     xdata_all = dataframe[xgas + '_scd [molec.cm^-2]'][0:step + 1].astype(float)
                     ydata_all = dataframe[ygas + '_scd [molec.cm^-2]'][0:step + 1].astype(float)
                     xdata = xdata_all[start:step + 1]
@@ -305,23 +311,41 @@ def updateAnalysisCanvas(canvas, step, config, results, dataframe, geometry,
                         m, p = siegelslopes(ydata[idx], x=xdata[idx])
                         x = np.linspace(xdata_all.min(), xdata_all.max())
                         y = m * x + p
+                        idx = [np.nanmin(ydata) <= value <= np.nanmax(ydata) for value in y]
 
                         # If atmospheric gases in the target gases, calculate background concentration
                         if plotmass:
                             input = 'g/m2'
                         else:
                             input = 'molec/cm2'
-                        atm_conc = scd2ppm(p, geometry.pathlength, pres=geometry.atm_pres,
-                                           temp=geometry.atm_temp, input=input, species=ygas)
+
                         legtxt1 = '%s = %.3g' % (pretty_ratios[config['TARGET']['ratios'][n]], m)
-                        if ygas == 'H2O':
-                            RH = ppm2RH(atm_conc, pres=geometry.atm_pres, temp=geometry.atm_temp)
-                            legtxt2 = 'bkg RH: %i %%' % (RH)
-                        else:
-                            legtxt2 = 'bkg %s: %i ppm' % (pretty_names[ygas], atm_conc)
+
+                        if geometry.type == 'layer':
+                            atm_conc = scd2ppm(p, geometry.pathlength, pres=geometry.atm_pres,
+                                               temp=geometry.atm_temp, input=input, species=ygas)
+                            if ygas == 'H2O':
+                                RH = ppm2RH(atm_conc, pres=geometry.atm_pres, temp=geometry.atm_temp)
+                                legtxt2 = 'bkg RH: %i %%' % (RH)
+                            else:
+                                legtxt2 = 'bkg %s: %i ppm' % (pretty_names[ygas], atm_conc)
+                        elif geometry.type == 'solar':
+                            if ygas in ['plume gases']:
+                                atm_conc = scd2ppm(p, geometry.plume_thickness, pres=geometry.plume_pres,
+                                                   temp=geometry.plume_temp, input=input, species=ygas)
+                                legtxt2 = 'bkg %s: %i ppm' % (pretty_names[ygas], atm_conc)
+                            else:
+                                legtxt2 = 'bkg %s: %.3g' % (pretty_names[ygas], p)
+                        elif geometry.type == 'emission':
+                            if ygas in ['plume gases']:
+                                atm_conc = scd2ppm(p, geometry.plume_thickness, pres=geometry.plume_pres,
+                                                   temp=geometry.plume_temp, input=input, species=ygas)
+                                legtxt2 = 'bkg %s: %i ppm' % (pretty_names[ygas], atm_conc)
+                            else:
+                                legtxt2 = 'bkg %s: %.3g' % (pretty_names[ygas], p)
 
                         # Update lines
-                        l4[n].set_data(x, y)    # Linear regression
+                        l4[n].set_data(x[idx], y[idx])    # Linear regression
                         l5[n].set_ydata(p)      # Intercept
 
                         # Update legend
@@ -555,7 +579,7 @@ def plotResults(dataframe, config=None, geometry=None, targets='all', ratios='al
     elif isinstance(dataframe, pd.DataFrame):       # Only one dataframe is provided (assumed to be the summary one)
         df = dataframe
         indiv_dfs = None
-    elif isinstance(dataframe, list):               # Multiple datasets provided (assumes the last one is the summary)
+    elif isinstance(dataframe, list) and config is not None:               # Multiple datasets provided (assumes the last one is the summary)
         indiv_dfs = {}
         for i, fit in enumerate([key for key in config.keys() if 'FIT' in key and config[key]['fit']]):
              indiv_dfs[fit] = dataframe[i]
@@ -817,6 +841,10 @@ def plotResults(dataframe, config=None, geometry=None, targets='all', ratios='al
             gs0 = gridspec.GridSpec(2, 4)
         elif n_ratios == 8:
             gs0 = gridspec.GridSpec(2, 4)
+        elif n_ratios == 9:
+            gs0 = gridspec.GridSpec(2, 5)
+        elif n_ratios == 10:
+            gs0 = gridspec.GridSpec(2, 5)
 
         for i in range(n_ratios):
 
@@ -824,25 +852,28 @@ def plotResults(dataframe, config=None, geometry=None, targets='all', ratios='al
             ratio_ax = fig.add_subplot(gs1[0:2, :])
             ts_ax = fig.add_subplot(gs1[2, :])
 
-            xname = ratios[i].split(':')[-1]
-            yname = ratios[i].split(':')[0]
-            if xname in ['H2SO4', 'ASH', 'WATER'] or yname in ['H2SO4', 'ASH', 'WATER']:
-                xdata = df[xname + '_scd [g.m^-2]'].astype(float)
-                ydata = df[yname + '_scd [g.m^-2]'].astype(float)
-                xerr = df[xname + '_scd error [g.m^-2]'].astype(float)
-                yerr = df[yname + '_scd error [g.m^-2]'].astype(float)
+            ygas, xgas = ratios[i].split(':')
+            if xgas in ['ASH', 'WATER'] or ygas in ['ASH', 'WATER']:
+                legtype = '[$g.m^{-2}$]'
+                input = 'g/m2'
+                xdata = df[xgas + '_scd [g.m^-2]'].astype(float)
+                ydata = df[ygas + '_scd [g.m^-2]'].astype(float)
+                xerr = df[xgas + '_scd error [g.m^-2]'].astype(float)
+                yerr = df[ygas + '_scd error [g.m^-2]'].astype(float)
             else:
-                xdata = df[xname + '_scd [molec.cm^-2]'].astype(float)
-                ydata = df[yname+ '_scd [molec.cm^-2]'].astype(float)
-                xerr = df[xname + '_scd error [molec.cm^-2]'].astype(float)
-                yerr = df[yname + '_scd error [molec.cm^-2]'].astype(float)
+                legtype = '[$molec.cm^{-2}$]'
+                input = 'molec/cm2'
+                xdata = df[xgas + '_scd [molec.cm^-2]'].astype(float)
+                ydata = df[ygas+ '_scd [molec.cm^-2]'].astype(float)
+                xerr = df[xgas + '_scd error [molec.cm^-2]'].astype(float)
+                yerr = df[ygas + '_scd error [molec.cm^-2]'].astype(float)
 
             # Calculate linear fit
             idx = np.isfinite(xdata) & np.isfinite(ydata)
             m, p = siegelslopes(ydata[idx], x=xdata[idx])
             x = np.linspace(xdata.min(), xdata.max())
             y = m * x + p
-            legtxt = '%s = %.3g' % (pretty_ratios[ratios[i]], m)
+            legtxt1 = '%s = %.3g' % (pretty_ratios[ratios[i]], m)
 
             # Plot scatter and fit
             scat = ratio_ax.scatter(xdata, ydata, s=10, c=scat_color, cmap=cmap, edgecolors='k', linewidths=0.3)
@@ -858,21 +889,36 @@ def plotResults(dataframe, config=None, geometry=None, targets='all', ratios='al
                     ecolor = 'tab:red'
                 ratio_ax.errorbar(xdata, ydata, xerr=xerr, yerr=yerr, fmt='none', elinewidth=0.5,
                                  ecolor=ecolor, capsize=2, capthick=0.5, zorder=0)
-            ratio_ax.plot(x, y, '--k', label=legtxt)
+            ratio_ax.plot(x, y, '--k', label=legtxt1)
 
-            # If atmospheric gases in the target gases, extrapolate intercept value
-            if yname == 'H2O':
-                atm_conc = scd2ppm(p, pathlength, pres=atm_pres, temp=atm_temp)
-                RH = ppm2RH(atm_conc, pres=atm_pres, temp=atm_temp)
-                ratio_ax.axhline(p, label='Intercept RH = %i %%' % RH, ls='--')
-            elif xname in ['H2SO4', 'ASH', 'WATER', 'ICE']:
-                ratio_ax.axhline(0.0, label='Ambient: n/a', ls='--')
-            else:
-                atm_conc = scd2ppm(p, pathlength, pres=atm_pres, temp=atm_temp)
-                ratio_ax.axhline(p, label='Intercept %s = %i ppm' % (pretty_names[yname], atm_conc), ls='--')
+            # Extrapolate intercept value
+            if geometry.type == 'layer':
+                atm_conc = scd2ppm(p, pathlength, pres=atm_pres,
+                                   temp=atm_temp, input=input, species=ygas)
+                if ygas == 'H2O':
+                    RH = ppm2RH(atm_conc, pres=atm_pres, temp=atm_temp)
+                    legtxt2 = 'bkg RH: %i %%' % (RH)
+                else:
+                    legtxt2 = 'bkg %s: %i ppm' % (pretty_names[ygas], atm_conc)
+            elif geometry.type == 'solar':
+                if ygas in ['plume gases']:
+                    atm_conc = scd2ppm(p, geometry.plume_thickness, pres=geometry.plume_pres,
+                                       temp=geometry.plume_temp, input=input, species=ygas)
+                    legtxt2 = 'bkg %s: %i ppm' % (pretty_names[ygas], atm_conc)
+                else:
+                    legtxt2 = 'bkg %s: %.3g' % (pretty_names[ygas], p)
+            elif geometry.type == 'emission':
+                if ygas in ['plume gases']:
+                    atm_conc = scd2ppm(p, geometry.plume_thickness, pres=geometry.plume_pres,
+                                       temp=geometry.plume_temp, input=input, species=ygas)
+                    legtxt2 = 'bkg %s: %i ppm' % (pretty_names[ygas], atm_conc)
+                else:
+                    legtxt2 = 'bkg %s: %.3g' % (pretty_names[ygas], p)
+            ratio_ax.axhline(p, label=legtxt2, ls='--')
 
             # Label axes
-            ratio_ax.set(xlabel=pretty_names[xname], ylabel=pretty_names[yname])
+            ratio_ax.set_title(legtype, fontsize=8, loc='right')
+            ratio_ax.set(xlabel=pretty_names[xgas], ylabel=pretty_names[ygas])
             ratio_ax.legend()
 
             # Plot ratio over time
@@ -912,7 +958,7 @@ def plotResults(dataframe, config=None, geometry=None, targets='all', ratios='al
             elif ':' in color_by:
                 label = color_by2
             elif ':' not in color_by:
-                label = pretty_names[color_by.upper()] + pretty_labels[legtype]
+                label = pretty_names[color_by.upper()] + pretty_labels[color_by2]
             cbar.ax.xaxis.set_ticks_position('top')
             cbar.ax.xaxis.set_label_position('top')
             cbar.set_label(label)

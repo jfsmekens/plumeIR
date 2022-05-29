@@ -147,9 +147,9 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
 
     # If no species is given
     if species is None:
-        raise ValueError('Please supply a species name from the following: %s' % possible_species)
+        raise ValueError('Please supply a species name from the following: %s' % possible_gases)
 
-    elif species in special_species:
+    elif species in special_gases:
 
         # ---------------------------------------------------------------------
         # Read in spectrum from JDX file
@@ -174,7 +174,7 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
 
             # Establish conditions in which measurement was made
             if species.lower() == 'sif4':
-                pres_ref = 65328  # Partial pressure of target gas from NIST webbook entry (490 mmHg) - [in Pa]
+                pres_ref = 65328  # Partial pressure of target gas from NIST webbook entry (490 mmHg), converted to [Pa]
                 temp_ref = 293.15  # "Room" temperature for NIST experiments [in K]
                 Lref = 0.05  # Standard path length for NIST experiments [in m]
             else:
@@ -199,7 +199,7 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
         Bext = xsec * N     # [in m^-1]
 
 
-    elif species in rfm_species:
+    elif species in rfm_gases:
 
         # Write RFM driver and run
         writeRFMdrv(start_wave, end_wave, nperwave, layer=True, pathlength=0.1, gas=species, conc={species: conc},
@@ -210,7 +210,7 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
         Bext = readRFM('./RFM/output/opt00100.out')['data'] / 100
 
     else:
-        raise ValueError('Invalid gas species. Please supply a species name from the following: %s' % possible_species)
+        raise ValueError('Invalid gas species. Please supply a species name from the following: %s' % possible_gases)
 
     # Make output structure
     out = {}
@@ -228,7 +228,7 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
 #                                   Make custom cross-sections for odd gases
 # ======================================================================================================================
 def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False, sigma=None, density=None,
-                    fname=None, species=None, sio2=None, acid=None, temp=298, save=True):
+                    fname=None, species=None, comp=None, temp=298, save=True):
     """
     This function calculates the Mie scattering properties for aerosols, using complex refractive indices from the ARIA
     database. The function uses the PyMieScatt.AutoMieQ() function to calculate the Mie efficiencies, then derive
@@ -261,7 +261,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
     :param sio2: Composition information for the ash.                                                            [wt. %]
             If given, fname will be ignored and the refractive indices will be computed using the parametrisation
                 described in Prata et al. 2018. Must be a scalar between 0-100. Works only between 500 and 2500 cm^-1
-    :param species: The label for the aerosol type. Currently supported types are: ['ash', 'h2so4', 'water']
+    :param species: The label for the aerosol type. Currently supported types are: ['ASH', 'H2SO4', 'WATER']
                         Files that don't match will be labeled with generic 'aerosol'
 
     :return: A dictionary with the following structure:
@@ -290,18 +290,19 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
     # ---------------------------------------------------------------------
     # Make sure input makes sense
     # ---------------------------------------------------------------------
-    possible_species = ['h2so4', 'ash', 'water']
+    possible_aeros = ['H2SO4', 'ASH', 'WATER']
 
     # If neither name nor species is given
     if species is None and fname is None:
-        raise ValueError('Please supply either a filename or a species name from the following: %s' % possible_species)
+        raise ValueError('Please supply either a filename or a species name from the following: %s' % possible_aeros)
 
     # If species given without a filename, use default
     if species is not None and fname is None:
-        if species.lower() == 'h2so4':
-            if acid is None:
+        if species.upper() == 'H2SO4':
+            if comp is None:
                 acid = 72
             else:
+                acid = int(comp * 100)
                 fnames = glob.glob('./xsec/H2SO4*%iK*Myhre*.ri' % temp)
                 acids = [float(f.split('_')[1]) for f in fnames]
 
@@ -312,20 +313,20 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
                 acid = find_nearest(acids, acid)
 
             fname = './xsec/H2SO4_%i_%iK_Myhre_2003.ri' % (acid, temp)
-        elif species.lower() == 'ash': fname = './xsec/ASH_etna_Deguine_2020.ri'
-        elif species.lower() == 'water': fname = './xsec/H2O_Downing_1975.ri'
+        elif species.upper() == 'ASH': fname = './xsec/ASH_etna_Deguine_2020.ri'
+        elif species.upper() == 'WATER': fname = './xsec/H2O_Downing_1975.ri'
 
     # If filename given without a species, determine which it is
     if species is None and fname is not None:
-        if 'ASH' in fname: species = 'ash'
-        elif 'H2SO4' in fname: species = 'h2so4'
-        elif 'WATER' in fname: species = 'water'
-        else: species = 'aerosol'
+        if 'ASH' in fname: species = 'ASH'
+        elif 'H2SO4' in fname: species = 'H2SO4'
+        elif 'WATER' in fname: species = 'WATER'
+        else: species = 'AEROSOL'
 
-    # Lower case version of the species for the rest of the script
-    species = species.lower()
+    # Upper case version of the species for the rest of the script
+    species = species.upper()
 
-    if species == 'h2so4':
+    if species == 'H2SO4':
         acid = float(fname.split('_')[1])
         if 'Myhre' in fname:
             temp = float(fname.split('_')[2].strip('K'))
@@ -357,12 +358,12 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
     # Get the density information depending on species
     # ---------------------------------------------------------------------
     if density is None:
-        if species == 'water':
+        if species == 'WATER':
             density = 1000
-        elif species == 'h2so4':
+        elif species == 'H2SO4':
             acid_frac = int(fname.split('/')[-1].split('_')[1]) / 100
             density = 1830 * acid_frac
-        elif species == 'ash':
+        elif species == 'ASH':
             density = 2600
 
     # Convert from mass concentration [g/m3] to number concentration [m^-3]
@@ -378,20 +379,17 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
     # ---------------------------------------------------------------------
     # 1: Using SiO2 wt.% to derive refractive indices [Prata et al. 2019]
     # ---------------------------------------------------------------------
-    if sio2 is not None:
-        # Make sure we are dealing with ash
-        if species != 'ash':
-            raise ValueError('Only provide sio2 parameter with species type ASH')
-
+    if comp is not None and species == 'ASH':
         # Make sure the value is within reasonable range
-        if not np.isscalar(sio2) or not 30 < sio2 < 100:
-            raise ValueError('Please enter sio2 wt %% as a scalar 30-100')
+        if not np.isscalar(comp) or not 0.0 < comp < 1.0:
+            raise ValueError('Please enter SiO2 wt %% as a scalar 0-1')
 
         # Load Parametrisation
         with open('./xsec/Prata_coeff.pkl', 'rb') as f:
             prata = pickle.load(f)
 
         # Compute n & k
+        sio2 = round(comp * 100)
         wave = np.asarray(prata['wn'])
         n = np.asarray(prata['a_i2'] + prata['b_i2'] * sio2)
         k = np.asarray(prata['c_i2'] + prata['d_i2'] * sio2)
@@ -445,9 +443,9 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
     header = {}
     header['title'] = '! Extinction cross-section generated with data from ARIA repository'
     header['species'] = species.upper()
-    if sio2 is not None:
+    if comp is not None and species == 'ASH':
         header['sio2'] = sio2
-    elif acid is not None:
+    elif comp is not None and species == 'H2SO4':
         header['acid'] = acid
     header['fname'] = fname
     header['start_wave'] = start_wave
@@ -460,9 +458,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
         header['size'] = size
         header['sigma'] = sigma
         header['mass_conc'] = mass_conc
-    if sio2 is not None:
-        header['sio2'] = sio2
-    else:
+    if fname is not None:
         header['fname'] = fname
 
     # List all existing file and compare headers
@@ -503,7 +499,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
             # Loop over range of wavelengths and get Q
             pbar = tqdm(total=npts)
             pbar.set_description('%s: %.2f um' % (species, size))
-            if sio2 is not None:
+            if species == 'ASH' and comp is not None:
                 pbar.set_postfix_str('%i wt.%% SiO2' % sio2)
             else:
                 pbar.set_postfix_str('from file: %s' % fname)
@@ -543,7 +539,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
             # Loop over range of wavelengths
             pbar = tqdm(total=npts * len(bins_nm))
             pbar.set_description('%s: %.2f um' % (species, size))
-            if sio2 is not None:
+            if species == 'ASH' and comp is not None:
                 pbar.set_postfix_str('%i wt.%% SiO2' % sio2)
             else:
                 pbar.set_postfix_str('from file: %s' % fname)
@@ -639,12 +635,12 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
             #             #     size_info = '%.2fum_%.2fsigma' % (size, sigma)
             #             # else:
             #             #     size_info = '%.2fum' % size
-            #             # if species == 'ash':
-            #             #     if sio2 is not None:
+            #             # if species == 'ASH':
+            #             #     if species == 'ASH' and comp is not None:
             #             #         outname = './xsec/customXSC_%s_%isio2_%s_%i-%icm_%iK.pkl' % (species.upper(), sio2, size_info, start_wave, end_wave, temp)
             #             #     else:
             #             #         outname = './xsec/customXSC_%s_fromfile_%s_%i-%icm_%iK.pkl' % (species.upper(), size_info, start_wave, end_wave, temp)
-            #             # elif species == 'h2so4':
+            #             # elif species == 'H2SO4':
             #             #     outname = './xsec/customXSC_%s_%iacid_%s_%i-%icm_%iK.pkl' % (species.upper(), acid, size_info, start_wave, end_wave, temp)
             #             # else:
             #             #     outname = './xsec/customXSC_%s_%s_%i-%icm_%iK.pkl' % (species.upper(), size_info, start_wave, end_wave, temp)

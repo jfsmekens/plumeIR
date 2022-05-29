@@ -12,14 +12,16 @@ midac_extensions = ['spc', 'sbm', 'ifg', 'sb', 'abs']
 invalid_extensions = ['pkl', 'csv', 'txt', 'ini', 'dat', 'xls', 'xlsx', 'doc', 'docx', 'jpg', 'png']
 
 # Gas species in RFM + those extracted from NIST
-rfm_species = ['H2O', 'CO2', 'SO2', 'CO', 'NO', 'O3', 'N2O', 'NO2', 'NH3', 'HNO3', 'CH4', 'O2', 'HCl', 'HF', 'HBr',
+rfm_gases = ['H2O', 'CO2', 'SO2', 'CO', 'NO', 'O3', 'N2O', 'NO2', 'NH3', 'HNO3', 'CH4', 'O2', 'HCl', 'HF', 'HBr',
                'HI', 'H2S', 'N2', 'ClO', 'SF6']
-special_species = ['SiF4']
-possible_species = rfm_species + special_species
+special_gases = ['SiF4']
+possible_gases = rfm_gases + special_gases
+
+possible_aeros = ['H2SO4', 'ASH', 'WATER']
 
 # Interesting Ratios: If any combination of 2 targets makes one of those ratios, it will be plotted
-interesting_ratios = ['CO2:SO2', 'H2O:SO2', 'H2O:CO2', 'CO2:CO', 'SO2:HCl', 'SO2:HF',
-                      'SO2:SiF4', 'HCl:HF', 'SO2:H2SO4', 'ASH:H2SO4', 'N/A:N/A']
+interesting_ratios = ['CO2:SO2', 'H2O:SO2', 'H2O:CO2', 'CO2:CO', 'CO:SO2', 'SO2:HCl', 'SO2:HF',
+                      'SO2:SiF4', 'HCl:HF', 'SO2:H2SO4', 'SO4:SO2', 'N/A:N/A']
 
 # Continuum Gases: gases in this list are treated differently when creating a reference
 #       (inlcude gases with continuum and/or line mixing issues)
@@ -51,8 +53,6 @@ plot_colors = {'H2O_sc': 'lightblue',
                'O3': 'tab:pink',
                'N2O': 'gold',
                'CH4': 'darkviolet',
-               'H2O_pl': 'tab:blue',
-               'CO2_pl': 'tab:orange',
                'SO2': 'tab:red',
                'CO': 'maroon',
                'HCl': 'cyan',
@@ -66,6 +66,25 @@ plot_colors = {'H2O_sc': 'lightblue',
                'R2': 'k',
                'RMSE': 'k',
                'N/A': 'w'}
+dark_colors = {'H2O_sc': 'lightblue',
+               'H2O': 'tab:blue',
+               'CO2': 'tab:orange',
+               'O3': 'tab:pink',
+               'N2O': 'gold',
+               'CH4': 'darkviolet',
+               'SO2': 'tab:red',
+               'CO': 'maroon',
+               'HCl': 'cyan',
+               'HF': 'magenta',
+               'NH3': 'yellow',
+               'SiF4': 'purple',
+               'H2S': 'olivedrab',
+               'H2SO4': 'tab:green',
+               'ASH': 'tab:grey',
+               'WATER': 'deepskyblue',
+               'R2': 'w',
+               'RMSE': 'w',
+               'N/A': 'k'}
 
 # Plot Color Maps: A dedicated colormap for each species
 plot_cmaps = {'H2O': 'Blues',
@@ -82,7 +101,9 @@ plot_cmaps = {'H2O': 'Blues',
               'ASH': 'Greys',
               'WATER': 'Blues',
               'R2': 'Greys',
-              'RMSE': 'Greys'}
+              'RMSE': 'Greys',
+              'dt_prox': 'Oranges',
+              'dt_plume': 'Reds'}
 
 # Pretty name: Mathtext for each species to use in labels
 pretty_names = {'H2O': '$H_2O$',
@@ -98,14 +119,15 @@ pretty_names = {'H2O': '$H_2O$',
                 'NH3': '$NH_3$',
                 'SiF4': '$SiF_4$',
                 'H2S': '$H_2S$',
-                'H2SO4': '$H_2SO_4$ aerosol',
-                'ASH': '$Ash$',
-                'WATER': '$H_2O$ aerosol',
-                'ICE': '$Ice$',
+                'SO4': '$SO_4$',
+                'H2SO4': '$SA$',
+                'ASH': '$ASH$',
+                'WATER': '$H_2O droplets$',
+                'ICE': '$ICE$',
                 'time': 'Local Time',
                 'R2': '$R^2$',
                 'RMSE': 'RMS error',
-                'N/A': 'n/a'}
+                'N/A': '$n/a$'}
 
 # Pretty Ratios: Use the math text in pretty_names to create pretty ratios for labels
 pretty_ratios = {}
@@ -124,7 +146,7 @@ logofont = {'family': 'Palatino',
             'weight': 'bold',
             'style': 'italic',
             'size': 18}
-versiontext = 'v0.1'
+versiontext = 'v0.2'
 versionfont = {'family': 'Palatino',
                'color':  'darkred',
                'weight': 'normal',

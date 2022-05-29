@@ -28,8 +28,8 @@ class Parameters(OrderedDict):
         """Initialize the Parameters"""
         self.update(*args, **kwargs)
 
-    def add(self, name, value=0, vary=True, atm_gas=False, plume_gas=False, plume_aero=False, target=False, ref_column=0,
-            min=-np.inf, max=np.inf):
+    def add(self, name, value=0, vary=True, atm_gas=False, plume_gas=False, plume_aero=False, target=False,
+            ref_column=0, ref_comp=None, min=-np.inf, max=np.inf):
         """
         Function to add a parameter to the collection
         :param name: [str] Name of the parameter
@@ -52,6 +52,7 @@ class Parameters(OrderedDict):
                                          plume_aero=plume_aero,
                                          target=target,
                                          ref_column=ref_column,
+                                         ref_comp=ref_comp,
                                          min=min,
                                          max=max))
 
@@ -122,8 +123,6 @@ class Parameters(OrderedDict):
         # Add the plume gas parameters
         for species in plume_gases:
             if species is not None:
-                if species in atm_gases:  # Add a differentiator if gas is in both atm and plume
-                    species = species + '_pl'
                 self.add(species, value=0.01, plume_gas=True, target=species in targets,
                            min=0.0, max=np.inf, vary=True)
 
@@ -131,7 +130,7 @@ class Parameters(OrderedDict):
         for species in plume_aero:
             if species is not None:
                 self.add(species, value=0.01, plume_aero=True, target=species in targets,
-                           min=0.0, max=np.inf, vary=True)
+                           min=0.0, max=np.inf, vary=True, ref_comp=std[species]['comp'])
                 self.add(species + '_deff', value=std[species]['size'], vary=retrieval.fit_size_aero,
                            min=std[species]['vmin'], max=std[species]['vmax'])
 
@@ -319,8 +318,8 @@ class Parameter(object):
     Parameter object
     """
 
-    def __init__(self, name, value, vary=True, plume_gas=False, plume_aero=False, atm_gas=False, target=False, ref_column=None,
-                 min=-np.inf, max=np.inf):
+    def __init__(self, name, value, vary=True, plume_gas=False, plume_aero=False, atm_gas=False, target=False,
+                 ref_column=None, ref_comp=None, min=-np.inf, max=np.inf):
         """ Initialise the parameter """
         self.name = name
         self.value = value
@@ -330,6 +329,7 @@ class Parameter(object):
         self.atm_gas = atm_gas
         self.target = target
         self.ref_column = ref_column
+        self.ref_comp = ref_comp
         self.min = min
         self.max = max
         self.fit_val = np.nan
@@ -406,7 +406,7 @@ class Geometry(object):
         elif type == 'solar' or type == 'emission':
             self.plume_height = plume_height
             self.plume_thickness = plume_thickness
-            self.pathlength = plume_thickness
+            self.pathlength = plume_thickness / np.sin(np.deg2rad(elev))
             self.elev = elev
             self.obs_height = obs_height
             self.obs_temp = obs_temp
@@ -440,7 +440,6 @@ class Geometry(object):
             
             # Add layer model for emission
             if type == 'emission':
-                self.pathlength = plume_thickness
                 self.layer_model = layer_model
                 if layer_model == 1:
                     self.h1 = plume_height

@@ -8,7 +8,7 @@
 # ------------------------
 
 *DATA
-data_dir		:	./data/2019-09-11/test8/							()
+data_dir		:	./data/2019-09-11/test1/							()
 
 filter_files	:	True			# Set to true if you want to keep only some spectra	(Blackbodies and clear sky spectra are automatically filtered)
 filter_string	:	plume			# Only keep spectra with this string in the name		()
@@ -46,7 +46,7 @@ sounding		:	./atm/LICT_sounding_190911_12Z.txt		# Path to sounding file 		(Must 
 *RETRIEVAL		# This where we define the retrieval parameters
 
 # For the linear regression
-update_params	: 	False		  	# Update a priori based on previous fit			()
+update_params	: 	True		  	# Update a priori based on previous fit			()
 use_bounds	: 	True			# Use bounds for fits					()
 
 # How to treat Aerosols
@@ -57,7 +57,7 @@ use_Babs_aero	: 	True			# Use Babs instead of Text for aerosols 			()
 # For emission fits
 fit_difference	:	True			# Fit the difference spectrum?				(Requires at least 1 clear sky in folder)
 use_bbt		: 	False			# Use Brightness Temperature for fits			(Adds computing time, looks nicer)
-bb_drift		:	True			# Calculate BB drift over time?				(Requires multiple sets of BB files in folder)
+bb_drift		:	False			# Calculate BB drift over time?				(Requires multiple sets of BB files in folder)
 clear_drift	:	False			# Calculate clear sky drift over time?			(Requires multiple clear sky files in folder)
 fit_tplume	:	False			# Fit temperature of plume layer?				(Necessary if not including aerosol species)
 dt_plume		: 	0			# A priori temperature drift	[K]			()
@@ -90,11 +90,11 @@ offset		: 	True			# A priori zero offset 		[a.u. or K]		()
 
 fit		:	True			# Use this fit?						()
 fit_window	:	700, 1300		# Fit window			[cm-1]			()
-atm_gases	:	H2O, O3, CO2		# List of atmospheric gases				()
-fix_atm_gas	:	H2O			# Set the conc of those gas species in the plume layer	()
-plume_gases	:	SO2			# List of plume gases				()
+atm_gases	:	H2O, O3, CO2, N2O, CH4		# List of atmospheric gases				()
+fix_atm_gas	:	None				# Set the conc of those gas species in the plume layer	()
+plume_gases	:	SO2, SiF4			# List of plume gases				()
 plume_aero	: 	H2SO4, ASH			# List of plume aerosols				()
-targets		:	SO2, H2SO4, ASH, CO2		# Target species					()
+targets		:	SO2, H2SO4, ASH, SiF4, CO2, H2O		# Target species					()
 
 
 

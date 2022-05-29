@@ -166,7 +166,7 @@ logger = logging.getLogger(__name__)
 # ======================================================================================================================
 #                                               Main initialise call
 # ======================================================================================================================
-def initialiseFit(config_file='./plumeIRconfig.txt'):
+def initialiseFit(config_file='./plumeIRconfig.txt', force_ref=False):
     """
     Function to initialise the retrieval based on the config file.
     :param config_file: [str] Path to the config file
@@ -311,7 +311,7 @@ def initialiseFit(config_file='./plumeIRconfig.txt'):
             fit_windows = fit_windows + fit['fit_window']
         params.append(param)
         analysers.append(Analyser(param, geometry, fit_windows, retrieval,
-                                  name='UNIFIT', data_dir=data_dir))
+                                  name='UNIFIT', data_dir=data_dir, force_ref=force_ref))
 
     for i, fit in enumerate(fit_dicts):
 
@@ -319,7 +319,7 @@ def initialiseFit(config_file='./plumeIRconfig.txt'):
         param.extract(fit, retrieval)
         params.append(param)
         analysers.append(Analyser(param, geometry, fit['fit_window'], retrieval,
-                                  name=names[i], data_dir=data_dir))
+                                  name=names[i], data_dir=data_dir, force_ref=force_ref))
 
     # ---------------------------------------------------------------------
     # Get the targets and ratios

@@ -1,7 +1,7 @@
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
 #  							Initialisation file for plumeIR
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
-*   species	:	conc	:	size 	:	sigma	:	vmin	:	vmax	:	compo	# Comments
+*   species	:	conc	:	size 	:	sigma	:	vmin	:	vmax	:	comp	# Comments
 # Units for gas	:       [ppm]	:	-	:	-	:	-	:	-	:		#
 # Units for aero	:      [g.m^-3]	:	um	:	n/a	:	um	:	um	:		#
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -10,26 +10,54 @@
 # ------------------------
 
 # Atmospheric gases
-H2O		:	19000	:	None	:	None	:	None	:	None	:	None	
+H2O		:	1.9e4	:	None	:	None	:	None	:	None	:	None	
 CO2		:	400	:	None	:	None	:	None	:	None	:	None	
 O3		:	0.01	:	None	:	None	:	None	:	None	:	None
+O2		:	2e5	:	None	:	None	:	None	:	None	:	None
 N2O		:	0.32	:	None	: 	None	:	None	:	None	:	None
 CH4		: 	1.7	:	None	:	None	:	None	:	None	:	None
+NO2		:	1e-3	:	None	:	None	:	None	:	None	:	None
+NO		:	1e-3	:	None	:	None	:	None	:	None	:	None
+N2		:	1e-4	:	None	:	None	:	None	:	None	:	None
+OH		:	1e-4	:	None	:	None	:	None	:	None	:	None
+HCOOH		:	1e-4	:	None	:	None	:	None	:	None	:	None
+HO2		:	1e-4	:	None	:	None	:	None	:	None	:	None
+O		:	1e-4	:	None	:	None	:	None	:	None	:	None
+HO2		:	1e-4	:	None	:	None	:	None	:	None	:	None
 
 # Volcanic gases
 SO2		:	0.5	:	None	:	None	:	None	:	None	:	None
-HCl		:	0.01	:	None	:	None	:	None	:	None	:	None
-HF		:	0.01	:	None	:	None	:	None	:	None	:	None
-CO		:	0.01	:	None	:	None	:	None	:	None	:	None
+HCl		:	100.0	:	None	:	None	:	None	:	None	:	None
+HF		:	0.1	:	None	:	None	:	None	:	None	:	None
+HBr		:	1e-4	:	None	:	None	:	None	:	None	:	None
+HI		:	1e-4	:	None	:	None	:	None	:	None	:	None
+CO		:	0.2	:	None	:	None	:	None	:	None	:	None
 NH3		:	0.01	:	None	:	None	:	None	:	None	:	None
+HNO3		:	0.01	:	None	:	None	:	None	:	None	:	None
 SiF4		: 	0.01	:	None	: 	None	:	None	:	None	:	None
-H2S		: 	0.01	:	None	: 	None	:	None	:	None	:	None
+H2S		: 	1e-4	:	None	: 	None	:	None	:	None	:	None
+ClO		: 	1e-4	:	None	: 	None	:	None	:	None	:	None
+OCS		: 	6e-4	:	None	: 	None	:	None	:	None	:	None
+H2CO		: 	1e-4	:	None	: 	None	:	None	:	None	:	None
+HOCl		: 	1e-4	:	None	: 	None	:	None	:	None	:	None
+HCN		:	1e-4	:	None	:	None	:	None	:	None	:	None
+CH3CL		:	1e-4	:	None	:	None	:	None	:	None	:	None
+ClONO2		:	1e-4	:	None	:	None	:	None	:	None	:	None
+H2O2		:	1e-4	:	None	:	None	:	None	:	None	:	None
+C2H2		:	1e-4	:	None	:	None	:	None	:	None	:	None
+C2H6		:	1e-4	:	None	:	None	:	None	:	None	:	None
+PH3		:	1e-4	:	None	:	None	:	None	:	None	:	None
+COF2		:	1e-4	:	None	:	None	:	None	:	None	:	None
+SF6		:	1e-4	:	None	:	None	:	None	:	None	:	None
+PH3		:	1e-4	:	None	:	None	:	None	:	None	:	None
+PH3		:	1e-4	:	None	:	None	:	None	:	None	:	None
+
 
 # ------------------------
 # AEROSOLS
 # ------------------------
 
-H2SO4		: 	5E-4	:    	0.5	: 	1.5	:	0.1	:	10.0	:	72	# composition in wt. % H2SO4
-ASH		:	1E-3	:	2.0	:	1.5	:	0.1	:	200.0	:	53	# composition in wt. % SiO2
-WATER		:	5E-4	:	0.5	:	1.5	:	0.1	:	10.0	:	None	# Water droplets
-ICE		:	1E-3	:	2.0	:	1.5	:	0.1	:	10.0	:	None	# Ice droplets
+H2SO4		: 	5E-4	:    	0.5	: 	1.5	:	0.1	:	10.0	:	0.72	# composition in wt. % H2SO4
+ASH		:	1E-3	:	2.0	:	1.5	:	0.1	:	200.0	:	0.53	# composition in wt. % SiO2
+WATER		:	5E-4	:	0.5	:	1.5	:	0.1	:	10.0	:	1.0	# Water droplets
+ICE		:	1E-3	:	2.0	:	1.5	:	0.1	:	10.0	:	1.0	# Ice droplets

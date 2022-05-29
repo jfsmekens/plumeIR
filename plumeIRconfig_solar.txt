@@ -9,11 +9,12 @@
 
 *DATA			# Point to the data and specify sorting criteria
 
-data_dir		:	./data/2021-08-13/								()
+data_dir		:	./data/2021-08-09/								()
 
 filter_files	:	True			# Set to true if you want to keep only some spectra	()
 filter_string	:	sun			# Only keep spectra with this string in the name		()
-max_spec		:	5000			# Maximum number of spectra				()
+filter_ext	:	None			# Only keep spectra with this extension			()
+max_spec	:	5000			# Maximum number of spectra				()
 scroll		:	50			# Maximum number of results displayed at one time		()
 
 # ------------------------
@@ -27,19 +28,19 @@ type 	 	:	solar			# Type of fit						()
 # Define layer geometry. This section is ignored when using solar or emission fits
 pathlength 	:	None			# Pathlength 			[km]			()
 atm_temp 	:	None			# Ambient temperature		[K]			()
-atm_pres		:	None			# Ambient pressure		[mbar]			()
+atm_pres	:	None			# Ambient pressure		[mbar]			()
 plume_temp	:	None			# Plume gas temperature		[K[			()
 plume_pres	:	None			# Plume gas pressure.		[mbar]			()
 
 # Define plume geometry. This section is ignored when using layer fits
 plume_height	:	2.0			# Plume height			[km]			()
-plume_thickness 	:	0.5			# Plume thickness		[km]			()
+plume_thickness :	0.5			# Plume thickness		[km]			()
 elev		:	35			# Viewing angle. 		[deg] 			(from horizontal)
 obs_height	:	0.2			# Observer height		[km]			()
-obs_temp		:	None			# Ambient temperature 		[K]			(ignored if None)
+obs_temp	:	None			# Ambient temperature 		[K]			(ignored if None)
 obs_RH		:	None			# Ambient Relative Humidity 	[K]			(ignored if None)
-atm_path		:	./atm/mls.atm		# Path to file with atmosphere				()
-sounding		:	None			# Path to sounding file 					(Must be .txt file. Ignored if None)
+atm_path	:	./atm/mls.atm		# Path to file with atmosphere				()
+sounding	:	None			# Path to sounding file 					(Must be .txt file. Ignored if None)
 
 # ------------------------
 # RETRIEVAL section
@@ -62,7 +63,7 @@ use_bbt		: 	False			# Use Brightness Temperature for fits			(Adds computing time
 bb_drift		:	True			# Calculate BB drift over time?				(Requires multiple sets of BB files in folder)
 clear_drift	:	True			# Calculate clear sky drift over time?			(Requires multiple clear sky files in folder)
 fit_tplume	:	False			# Fit temperature of plume layer?				(Necessary if not including aerosol species)
-dt_plume		: 	0			# A priori temperature drift	[K]			()
+dt_plume	: 	0			# A priori temperature drift	[K]			()
 fit_tprox	:	True			# Fit temperature of proximal layer?			(Only use for low altitude plumes)
 dt_prox		: 	0			# A priori temperature drift	[K]			()
 H2O_scaling	: 	6			# Apply H2O scaling to layers 1-2-3?			(Recommend 2 layers)
@@ -80,7 +81,7 @@ unified		: 	False			# For multiple fit windows, should the background be the sam
 fit_fov		:	True			# Fit the FOV?						()
 fov		:	0.03			# A priori FOV value 		[rad]			()
 fit_shift	:	True			# Fit frequency shift?					()
-nu_shift		:	0			# A priori frequency shift 	[cm-1]			()
+nu_shift	:	0			# A priori frequency shift 	[cm-1]			()
 fit_offset	:	True			# Fit_offset?						()
 offset		: 	0			# A priori zero offset 		[a.u. or K]		()
 
