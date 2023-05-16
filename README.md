@@ -1,6 +1,6 @@
 # plumeIR
 
-plumeIR is a program designed to retrieve gas and particulate column densities from IR spectra measured by Open-Path Fourier Transform (OP-FTIR) spectrometers, with the specific purpose of monitoring volcanic emissions.
+plumeIR is a program designed to retrieve gas and particulate column densities from IR spectra measured in emission geometry by Open-Path Fourier Transform (OP-FTIR) spectrometers, with the specific purpose of monitoring volcanic emissions.
 
 ## Create Python Environment
 plumeIR requires Python 3.6+ with the following packages:

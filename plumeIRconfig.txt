@@ -8,10 +8,11 @@
 # ------------------------
 
 *DATA
-data_dir		:	./data/2021-08-11/								()
+data_dir		:	./data/2019-09-11/test1/							()
 
-filter_files	:	True			# Set to true if you want to keep only some spectra	()
-filter_string	:	vent			# Only keep spectra with this string in the name		()
+filter_files	:	True			# Set to true if you want to keep only some spectra	(Blackbodies and clear sky spectra are automatically filtered)
+filter_string	:	plume			# Only keep spectra with this string in the name		()
+filter_ext	:	None			# Only keep files with this extension			()
 max_spec		:	5000			# Maximum number of spectra				()
 
 # ------------------------
@@ -19,127 +20,81 @@ max_spec		:	5000			# Maximum number of spectra				()
 # ------------------------
 
 *GEOMETRY
-type 	 	:	layer			# Type of fit						()
+type 	 	:	emission			# Type of fit						()
+layer_model	:	2
 
 # Define layer fit properties. This section is ignored when using solar or emission fits
-pathlength 	:	1.8			# Pathlength 			[km]			()
-atm_temp 	:	290			# Ambient temperature		[K]			()
-atm_pres		:	980			# Ambient pressure		[mbar]			()
-plume_temp	:	400			# Plume gas temperature		[K[			()
-plume_pres	:	980			# Plume gas pressure.		[mbar]			()
+pathlength 	:	None			# Pathlength 			[km]			()
+atm_temp 	:	None			# Ambient temperature		[K]			()
+atm_pres		:	None			# Ambient pressure		[mbar]			()
+plume_temp	:	None			# Plume gas temperature		[K]			()
+plume_pres	:	None			# Plume gas pressure.		[mbar]			()
 
-plume_height	:	2.0			# Plume height			[km]			()
-plume_thickness 	:	0.5			# Plume thickness		[km]			()
-elev		:	25			# Viewing angle. 		[deg] 			(from horizontal)
-obs_height	:	0.2			# Observer height		[km]			()
+plume_height	:	1.0			# Plume height			[km]			()
+plume_thickness 	:	0.2			# Plume thickness		[km]			()
+elev		:	25			# Viewing angle	 		[deg] 			(from horizontal)
+obs_height	:	0.118			# Observer height		[km]			()
 obs_temp		:	None			# Ambient temperature 		[K]			(ignored if None)
-obs_RH		:	None			# Ambient Relative Humidity 	[K]			(ignored if None)
-atm_path		:	./atm/mls.atm		# Path to file with atmosphere				()
-sounding		:	None			# Path to sounding file 					(Must be .txt file. Ignored if None)
+obs_RH		:	None			# Ambient Relative Humidity 	[%]			(ignored if None)
+atm_path		:	./atm/mls.atm					# Path to standard atmosphere	()
+sounding		:	./atm/LICT_sounding_190911_12Z.txt		# Path to sounding file 		(Must be .txt file. Ignored if None)
+
+# ------------------------
+# RETRIEVAL section
+# ------------------------
+
+*RETRIEVAL		# This where we define the retrieval parameters
+
+# For the linear regression
+update_params	: 	True		  	# Update a priori based on previous fit			()
+use_bounds	: 	True			# Use bounds for fits					()
+
+# How to treat Aerosols
+plume_aero	: 	None			# Use aerosols in all fits?
+fit_size_aero	:	True			# Fit size of aerosols?					()
+use_Babs_aero	: 	True			# Use Babs instead of Text for aerosols 			()
+
+# For emission fits
+fit_difference	:	True			# Fit the difference spectrum?				(Requires at least 1 clear sky in folder)
+use_bbt		: 	False			# Use Brightness Temperature for fits			(Adds computing time, looks nicer)
+bb_drift		:	False			# Calculate BB drift over time?				(Requires multiple sets of BB files in folder)
+clear_drift	:	False			# Calculate clear sky drift over time?			(Requires multiple clear sky files in folder)
+fit_tplume	:	False			# Fit temperature of plume layer?				(Necessary if not including aerosol species)
+dt_plume		: 	0			# A priori temperature drift	[K]			()
+fit_tprox	:	True			# Fit temperature of proximal layer?			(Only use for low altitude plumes)
+dt_prox		: 	0			# A priori temperature drift	[K]			()
+H2O_scaling	: 	3			# Apply H2O scaling to layers 1-2-3?			(Recommend 2 layers)
+
+# Background fitting
+subtract_self	:	True			# Subtract self emission background before fit		()
+no_gas		:	True			# Separate the transmission of plume only using a spectrum with "no gas"
+fix_envelope	:	False			# Fix the background polynomial to the envelope		()
+polydeg		:	0			# Degree of background polynomial 			(recommend max 3)
+fit_source_temp	:	False			# Fit the source temperature?				()
+source_temp	:	1000			# A priori source temperature	[K]			()
+unified		: 	False			# For multiple fit windows, should the background be the same? 
+
+# ILS
+fit_fov		:	False			# Fit the FOV?						()
+fov		:	0.03			# A priori FOV value 		[rad]			()
+fit_shift	:	True			# Fit frequency shift?					()
+nu_shift		:	0			# A priori frequency shift 	[cm-1]			()
+fit_offset	:	False			# Fit_offset?						()
+offset		: 	True			# A priori zero offset 		[a.u. or K]		()
 
 # ------------------------
 # FIT1 section
 # ------------------------
 
-*FIT1
+*FIT1			# Fit in TIR window (good for aerosols)
+
 fit		:	True			# Use this fit?						()
-update_params	: 	True			# Update a priori based on previous results?		()
-
-# What to look for and where
-fit_window	:	2400, 2900		# Fit window			[cm-1]			()
-atm_gases	:	H2O, N2O, CH4		# List of atmospheric gases				()
-plume_gases	:	SO2, HCl			# List of plume gases					()
-plume_aero	: 	None			# List of plume aerosols					()
-targets		:	SO2, HCl			# Target species						()
-
-# ILS
-polydeg		:	3			# Degree of background polynomial 			(recommend max 3)
-fit_fov		:	True			# Fit the FOV?						()
-fov		:	0.03			# A priori FOV value 		[rad]			()
-fit_shift	:	True			# Fit frequency shift?					()
-nu_shift		:	0			# A priori frequency shift 	[cm-1]			()
-fit_offset	:	False			# Fit_offset?						()
-offset		: 	0			# A priori zero offset 		[a.u. or K]		()
-fit_source_temp	:	False			# Fit the source temperature?				()
-source_temp	:	1000			# A priori source temperature	[K]			()
+fit_window	:	700, 1300		# Fit window			[cm-1]			()
+atm_gases	:	H2O, O3, CO2, N2O, CH4		# List of atmospheric gases				()
+fix_atm_gas	:	None				# Set the conc of those gas species in the plume layer	()
+plume_gases	:	SO2, SiF4			# List of plume gases				()
+plume_aero	: 	H2SO4, ASH			# List of plume aerosols				()
+targets		:	SO2, H2SO4, ASH, SiF4, CO2, H2O		# Target species					()
 
 
-# ------------------------
-# FIT2 section 
-# ------------------------
 
-*FIT2
-fit		:	True			# Use this fit?						()
-update_params	: 	True			# Update a priori based on previous results?		()
-
-# What to look for and where
-fit_window	:	2020, 2150		# Fit window			[cm-1]			()
-atm_gases	:	N2O			# List of atmospheric gases				()
-plume_gases	:	H2O, CO2, CO		# List of plume gases					()
-plume_aero	: 	None			# List of plume aerosols					()
-targets		:	H2O, CO2, CO		# Target species						()
-
-# ILS
-polydeg		:	3			# Degree of background polynomial 			(recommend max 3)
-fit_fov		:	True			# Fit the FOV?						()
-fov		:	0.03			# A priori FOV value 		[rad]			()
-fit_shift	:	True			# Fit frequency shift?					()
-nu_shift		:	0			# A priori frequency shift 	[cm-1]			()
-fit_offset	:	True			# Fit_offset?						()
-offset		: 	0			# A priori zero offset 		[a.u. or K]		()
-fit_source_temp	:	False			# Fit the source temperature?				()
-source_temp	:	1000			# A priori source temperature	K]			()
-
-
-# ------------------------
-# FIT3 section 
-# ------------------------
-
-*FIT3
-fit		:	True			# Use this fit?						()
-update_params	: 	True			# Update a priori based on previous results?		()
-
-# What to look for and where
-fit_window	:	4000, 4100		# Fit window			[cm-1]			()
-atm_gases	:	H2O			# List of atmospheric gases				()
-plume_gases	:	HF			# List of plume gases					()
-plume_aero	: 	None			# List of plume aerosols					()
-targets		:	HF			# Target species						()
-
-# ILS
-polydeg		:	3			# Degree of background polynomial 			(recommend max 3)
-fit_fov		:	True			# Fit the FOV?						()
-fov		:	0.03			# A priori FOV value 		[rad]			()
-fit_shift	:	True			# Fit frequency shift?					()
-nu_shift		:	0			# A priori frequency shift 	[cm-1]			()
-fit_offset	:	True			# Fit_offset?						()
-offset		: 	0			# A priori zero offset 		[a.u. or K]		()
-fit_source_temp	:	False			# Fit the source temperature?				()
-source_temp	:	1000			# A priori source temperature	K]			()
-
-
-# ------------------------
-# FIT4 section 
-# ------------------------
-
-*FIT4
-fit		:	False			# Use this fit?						()
-update_params	: 	True			# Update a priori based on previous results?		()
-
-# What to look for and where
-fit_window	:	940, 980			# Fit window			[cm-1]			()
-atm_gases	:	H2O, CO2			# List of atmospheric gases				()
-plume_gases	:	NH3			# List of plume gases					()
-plume_aero	: 	None			# List of plume aerosols					()
-targets		:	NH3			# Target species						()
-
-# ILS
-polydeg		:	3			# Degree of background polynomial 			(recommend max 3)
-fit_fov		:	True			# Fit the FOV?						()
-fov		:	0.03			# A priori FOV value 		[rad]			()
-fit_shift	:	True			# Fit frequency shift?					()
-nu_shift		:	0			# A priori frequency shift 	[cm-1]			()
-fit_offset	:	True			# Fit_offset?						()
-offset		: 	0			# A priori zero offset 		[a.u. or K]		()
-fit_source_temp	:	False			# Fit the source temperature?				()
-source_temp	:	1000			# A priori source temperature	K]			()
