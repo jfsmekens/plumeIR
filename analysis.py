@@ -6,7 +6,6 @@ Defines two object classes:
 
     Analyser - an object with functions to perform the spectral analysis
         makeReference           generate OD cross-sections to be used by forward model
-        fowardTransmission      forward model for transmission cases (IR source: lamp, sun, moon, lava)
         forwardEmission         forward model for emission cases (no IR source, cold sky background)
         preProcess              contains all the steps to go from raw single beam spectrum to ready to fit
                                 (trim, offset, calibrate, calculate difference with clear spectrum if necessary)
@@ -314,446 +313,11 @@ class Analyser(object):
         logger.info('########## Reference cross-sections for %s - type %s ##########'
                     % (self.name.upper(), self.type.upper()))
 
-        # ---------------------------------------------------------------------
-        # 1: Homogeneous layer geometry
-        # ---------------------------------------------------------------------
-        if self.type == 'layer':
-
-            # Generate header for looking up references
-            header = "Pathlength: %.3f\n" \
-                     "Atmospheric temperature: %i K\n" \
-                     "Atmospheric pressure: %i mbar\n" \
-                     "Plume temperature: %i K\n" \
-                     "Plume pressure: %i mbar\n" \
-                     "Fit window: %i - %i cm^-1\n" \
-                     "Spectral resolution: %.3f cm^-1\n" \
-                     "Atmospheric gases: %s\n" \
-                     "Plume gases: %s\n" \
-                     "Plume aerosols: %s\n" \
-                     % (self.geometry.pathlength,
-                        self.geometry.atm_temp,
-                        self.geometry.atm_pres,
-                        self.geometry.plume_temp,
-                        self.geometry.plume_pres,
-                        self.start_wave, self.end_wave,
-                        self.model_spacing,
-                        self.params.atmGasList(),
-                        self.params.plumeGasList(),
-                        self.params.plumeAeroList())
-
-            # Compare headers to see if any of the saved references are a match
-            old_refs = glob.glob(self.data_dir + '/layerReference*.pkl')
-            match = False
-            matches = []
-            if len(old_refs) == 0:
-                match = False
-            else:
-                for path in old_refs:
-                    with open(path, 'rb') as f:
-                        old = pickle.load(f)
-                    if 'header' in old.keys():
-                        if old['header'] == header:
-                            matches.append(True)
-                        else:
-                            matches.append(False)
-                    else:
-                        matches.append(False)
-
-            # Load the most recent matching reference
-            if any(matches):
-                match = True
-                match_idx = [i for i, val in enumerate(matches) if val]
-                logger.info('Found %i matching references' % len(match_idx))
-                if len(match_idx) == 1:
-                    logger.info('Loading: %s' % old_refs[match_idx[0]])
-                    with open(old_refs[match_idx[0]], 'rb') as f:
-                        ref = pickle.load(f)
-                else:
-                    logger.info('Loading most recent: %s' % old_refs[match_idx[-1]])
-                    with open(old_refs[match_idx[-1]], 'rb') as f:
-                        ref = pickle.load(f)
-
-            # If no match is found, proceed with creating one
-            if not match or force:
-
-                # Create empty structures
-                ref['atm'] = {}
-                ref['plume'] = {}
-                ref['atm']['ref_column'] = {}
-                ref['plume']['ref_column'] = {}
-
-                # ----- 1: Atmospheric gases -----
-                logger.info('Atmospheric gases %s at %i K...' % (self.params.atmGasList(), self.geometry.atm_temp))
-                ref['atm']['OD_calib'] = {}
-
-                # Get the list of gases and create a progress bar
-                atm_gases = self.params.atmGasList()
-                n_gas = len(atm_gases)
-                n_continuum = len([gas for gas in atm_gases if gas in continuum_gases])
-                pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)  # Progress bar
-
-                # Loop over gases
-                for i, gas in enumerate(atm_gases):
-
-                    pbar.set_description('%s' % gas)    # Update pbar description
-
-                    # Assign reference column amount and find concentration based on pathlength
-                    ref_conc = std[gas]['conc']
-                    ref['atm']['ref_column'][gas] = ppm2scd(ref_conc, self.geometry.pathlength,
-                                                            temp=self.geometry.atm_temp, pres=self.geometry.atm_pres)
-
-                    # If gas is a continuum gas, use scalings to create a calibration polynomial
-                    if gas in continuum_gases:
-                        ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
-                        for j, sc in enumerate(scalings):
-                            pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
-                            # Generate OD cross-section
-                            ODs[:, j] = makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc * sc,
-                                                   species=gas)['Bext'] * self.geometry.pathlength * 1e3
-                            if sc == 1.0:
-                                ref['atm'][gas] = makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc,
-                                                             species=gas)['Bext'] * self.geometry.pathlength * 1e3
-                            pbar.update()
-                        ref['atm']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
-
-                    # Otherwise just make one cross-section with a reference quantity
-                    else:
-                        ref['atm'][gas] = makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc,
-                                                     species=gas)['Bext'] * self.geometry.pathlength * 1e3
-                        pbar.update()
-                    pbar.set_description('Done!')
-                pbar.close()
-                logger.info('...Done!')
-
-                # ----- 2: Plume gases -----
-                logger.info('Plume gases %s at %i K...' % (self.params.plumeGasList(), self.geometry.plume_temp))
-                ref['plume']['OD_calib'] = {}
-
-                # Get the list of gases and create a progress bar
-                plume_gases = self.params.plumeGasList()
-                n_gas = len(plume_gases)
-                n_continuum = len([gas for gas in plume_gases if gas in continuum_gases])
-                pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)  # Progress bar
-
-                # Loop over gases
-                for i, gas in enumerate(plume_gases):
-
-                    # If gas is both atm and plume, remove suffix
-                    pbar.set_description('%s' % gas)
-
-                    # Assign reference concentration and reference SCD based on pathlength
-                    ref_conc = std[gas]['conc']
-                    ref['plume']['ref_column'][gas] = ppm2scd(ref_conc, self.geometry.pathlength,
-                                                              temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)
-
-                    # If gas is a continuum gas, use scalings to create a calibration polynomial
-                    if gas in continuum_gases:
-                        ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
-                        for j, sc in enumerate(scalings):
-                            pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
-                            # Generate OD cross-section
-                            ODs[:, j] = makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc * sc,
-                                                           species=gas)['Bext'] * self.geometry.pathlength * 1e3
-                            if sc == 1.0:
-                                ref['plume'][gas] = makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc,
-                                                             species=gas)['Bext'] * self.geometry.pathlength * 1e3
-                            pbar.update()
-
-                        ref['plume']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
-
-                    # Otherwise just make one cross-section with a reference quantity
-                    else:
-                        ref['plume'][gas] = makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc,
-                                                           species=gas)['Bext'] * self.geometry.pathlength * 1e3
-                        pbar.update()
-                    pbar.set_description('Done!')
-                pbar.close()
-                logger.info('...Done!')
-
-                # --- 3: Plume aerosols ---
-                logger.info('Plume particulates %s ...' % self.params.plumeAeroList())
-
-                # Loop over particulates
-                for aero in self.params.plumeAeroList():
-
-                    # Assign reference column amount
-                    ref['plume']['ref_column'][aero] = std[aero]['conc'] * self.geometry.pathlength * 1e3
-                    ref['plume'][aero] = {}
-                    comp = std[aero]['comp']
-
-                    # Get size parameters from standard file
-                    size_log = np.linspace(np.log10(std[aero]['vmin']), np.log10(std[aero]['vmax']), 11)
-                    sigma = std[aero]['sigma']
-                    mass_conc = std[aero]['conc']
-
-                    # Create empty arrays
-                    Bext = np.empty([11, len(self.model_grid)], dtype=float)
-                    Babs = np.empty([11, len(self.model_grid)], dtype=float)
-
-                    for i, size in enumerate(size_log):
-                        # When using a PSD
-                        if sigma is None:
-                            xsec = makeAerosolXSC(self.start_wave, self.end_wave, self.n_per_wave, 10 ** size,
-                                               mass_conc, species=aero, comp=comp)
-
-                        # When using a single size
-                        else:
-                            xsec = makeAerosolXSC(self.start_wave, self.end_wave, self.n_per_wave, 10 ** size,
-                                               mass_conc, psd=True, sigma=sigma, species=aero, comp=comp)
-
-                        # Store Bext and Babs in arrays
-                        Bext[i, :] = xsec['Bext'] * self.geometry.pathlength * 1e3
-                        Babs[i, :] = xsec['Babs'] * self.geometry.pathlength * 1e3
-
-                    # Create polynomial calibration
-                    ref['plume'][aero]['Bext'] = np.polyfit(size_log, Bext, 10)
-                    ref['plume'][aero]['Babs'] = np.polyfit(size_log, Babs, 10)
-
-                logger.info('...Done!')
-
-                # Save a copy to avoid lengthy reruns
-                ref['header'] = header
-                outname = self.data_dir + 'layerReference_%s.pkl' % datetime.strftime(datetime.now(), '%Y%m%dT%H%M%S')
-                with open(outname, 'wb') as f:
-                    pickle.dump(ref, f)
-                logger.info('Reference saved in local data directory: %s' % outname)
-
-        # ---------------------------------------------------------------------
-        # 2: Solar occultation geometry
-        # ---------------------------------------------------------------------
-        elif self.type == 'solar' or self.type == 'lunar':
-
-            # Look for solar spectrum (coming soon!)
-
-            # Create empty structures
-            ref['atm'] = {}
-            ref['plume'] = {}
-            ref['atm']['ref_column'] = {}
-            ref['plume']['ref_column'] = {}
-
-            # Copy atm profile to analyser level
-            self.atm = self.geometry.atm
-
-            # Generate header for looking up references
-            header = "Standard atmosphere: %s\n" \
-                     "Sounding: %s\n" \
-                     "Observer Height: %.3f km\n" \
-                     "Plume Height: %.3f km\n" \
-                     "Plume Thickness: %.3f km\n" \
-                     "Viewing Angle: %.1f deg\n" \
-                     "Fit window: %i - %i cm^-1\n" \
-                     "Spectral resolution: %.3f cm^-1\n" \
-                     "Atmospheric gases: %s\n" \
-                     "Plume gases: %s\n" \
-                     "Plume aerosols: %s\n" \
-                     % (self.geometry.atm_path,
-                        self.geometry.sounding,
-                        self.geometry.obs_height,
-                        self.geometry.plume_height,
-                        self.geometry.plume_thickness,
-                        self.geometry.elev,
-                        self.start_wave, self.end_wave,
-                        self.model_spacing,
-                        self.params.atmGasList(),
-                        self.params.plumeGasList(),
-                        self.params.plumeAeroList())
-
-            # Compare headers to see if any of the saved references are a match
-            old_refs = glob.glob(self.data_dir + '/solarReference*.pkl')
-            match = False
-            matches = []
-            if len(old_refs) == 0:
-                match = False
-            else:
-                for path in old_refs:
-                    with open(path, 'rb') as f:
-                        old = pickle.load(f)
-                    if 'header' in old.keys():
-                        if old['header'] == header:
-                            matches.append(True)
-                        else:
-                            matches.append(False)
-                    else:
-                        matches.append(False)
-
-            # Load most recent matching reference
-            if any(matches):
-                match = True
-                match_idx = [i for i, val in enumerate(matches) if val]
-                logger.info('Found %i matching references' % len(match_idx))
-                if len(match_idx) == 1:
-                    logger.info('Loading: %s' % old_refs[match_idx[0]])
-                    with open(old_refs[match_idx[0]], 'rb') as f:
-                        ref = pickle.load(f)
-                else:
-                    logger.info('Loading most recent: %s' % old_refs[match_idx[-1]])
-                    with open(old_refs[match_idx[-1]], 'rb') as f:
-                        ref = pickle.load(f)
-
-            # If no match is found, proceed with creating a new one
-            if not match or force:
-
-                # --- 1: Atmospheric gases ---
-                logger.info('Background atmosphere: from observer height (%.2f km) to edge of atmosphere ...'
-                            % self.geometry.obs_height)
-                atm_dist, dist = sliceAtm(self.geometry.atm_path, self.geometry.obs_height,
-                                          self.atm['HGT'].max(), outpath=True)
-
-                ref['atm']['OD_calib'] = {}
-
-                # Look up list of gases and create a progress bar
-                atm_gases = self.params.atmGasList()
-                n_gas = len(atm_gases)
-                n_continuum = len([gas for gas in atm_gases if gas in continuum_gases])
-                pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)  # Progress bar
-
-                # Loop over gases
-                for gas in atm_gases:
-
-                    # Assign total column as reference
-                    pbar.set_description('%s' % gas)
-                    ref['atm']['ref_column'][gas] = ppm2scd(atm_dist[gas], atm_dist['HGT'] * 1e3,
-                                                            temp=atm_dist['TEM'],
-                                                            pres=atm_dist['PRE'])
-
-                    # If gas is a continuum gas
-                    if gas in continuum_gases:
-
-                        ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
-                        for j, sc in enumerate(scalings):
-                            pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
-
-                            # Scale atmosphere for that gas
-                            atm_scaled, scaled = scaleAtm(dist, sc, which=gas, outpath=True)
-
-                            # Write RFM driver and run
-                            writeRFMdrv(self.start_wave, self.end_wave, self.n_per_wave, layer=False, atm=scaled,
-                                        height=self.geometry.obs_height, elev=self.geometry.elev, gas=gas)
-                            run('./RFM/source/rfm', stdout=DEVNULL)
-
-                            # Generate OD cross-section
-                            ODs[:, j] = readRFM('./RFM/output/opt%05d.out' % (self.geometry.elev * 1e3))['data']
-                            if sc == 1.0:
-                                ref['atm'][gas] = readRFM('./RFM/output/opt%05d.out' % (self.geometry.elev * 1e3))['data']
-                            pbar.update()
-
-                        ref['atm']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
-
-                    # Otherwise just create a cross-section based onn a reference quantity
-                    else:
-
-                        # Write RFM driver and run
-                        writeRFMdrv(self.start_wave, self.end_wave, self.n_per_wave, layer=False, atm=dist,
-                                    height=self.geometry.obs_height, elev=self.geometry.elev, gas=gas)
-                        run('./RFM/source/rfm', stdout=DEVNULL)
-
-                        # Read Optical Depth
-                        ref['atm'][gas] = readRFM('./RFM/output/opt%05d.out' % (self.geometry.elev * 1e3))['data']
-                        pbar.update()
-                    pbar.set_description('Done!')
-                pbar.close()
-                logger.info('...Done!')
-
-                # ----- 2: Plume gases -----
-                logger.info('Plume gases %s at %i K...' % (self.params.plumeGasList(), self.geometry.plume_temp))
-                ref['plume']['OD_calib'] = {}
-
-                # Create list of gases and generate progress bar
-                plume_gases = self.params.plumeGasList()
-                n_gas = len(plume_gases)
-                n_continuum = len([gas for gas in plume_gases if gas in continuum_gases])
-                pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)  # Progress bar
-
-                # Loop over gases
-                for i, gas in enumerate(plume_gases):
-
-                    # If gas is both atm and plume, remove suffix
-                    pbar.set_description('%s' % gas)
-
-                    # Assign reference concentration and reference SCD based on pathlength
-                    ref_conc = std[gas]['conc']
-                    ref['plume']['ref_column'][gas] = ppm2scd(ref_conc, self.geometry.pathlength,
-                                                              temp=self.geometry.plume_temp,
-                                                              pres=self.geometry.plume_pres)
-
-                    # If gas is a continuum gas, use scalings to create a calibration polynomial
-                    if gas in continuum_gases:
-
-                        ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
-                        for j, sc in enumerate(scalings):
-                            pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
-                            # Generate OD cross-section
-                            ODs[:, j] = \
-                                makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc * sc,
-                                           species=gas)['Bext'] * self.geometry.pathlength * 1e3
-                            if sc == 1.0:
-                                ref['atm'][gas] = \
-                                    makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc,
-                                               species=gas)['Bext'] * self.geometry.pathlength * 1e3
-                            pbar.update()
-
-                        ref['plume']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
-
-                    # Otherwise create a cross-section for a reference quantity
-                    else:
-                        pbar.set_description('%s' % gas)
-                        ref['plume'][gas] = \
-                            makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc,
-                                       species=gas)['Bext'] * self.geometry.pathlength * 1e3
-                        pbar.update()
-                    pbar.set_description('Done!')
-                pbar.close()
-                logger.info('...Done!')
-
-                # --- 3: Plume aerosols ---
-                logger.info('Plume aerosols %s ...' % self.params.plumeAeroList())
-                for aero in self.params.plumeAeroList():
-
-                    # Assign reference column amount
-                    ref['plume'][aero] = {}
-                    comp = std[aero]['comp']
-                    ref['plume']['ref_column'][aero] = std[aero]['conc'] * self.geometry.pathlength * 1e3
-
-                    # Get size parameters from standard file
-                    size_log = np.linspace(np.log10(std[aero]['vmin']), np.log10(std[aero]['vmax']), 11)
-                    sigma = std[aero]['sigma']
-                    mass_conc = std[aero]['conc']
-
-                    # Create empty arrays
-                    Bext = np.empty([11, len(self.model_grid)], dtype=float)
-                    Babs = np.empty([11, len(self.model_grid)], dtype=float)
-
-                    for i, size in enumerate(size_log):
-                        # When size is a PSD
-                        if sigma is None:
-                            xsec = makeAerosolXSC(self.start_wave, self.end_wave, self.n_per_wave, 10 ** size,
-                                               mass_conc, species=aero, comp=comp)
-
-                        # When size is a single size
-                        else:
-                            xsec = makeAerosolXSC(self.start_wave, self.end_wave, self.n_per_wave, 10 ** size,
-                                               mass_conc, psd=True, sigma=sigma, species=aero, comp=comp)
-
-                        # Store Bext and Babs in arrays
-                        Bext[i, :] = xsec['Bext'] * self.geometry.pathlength * 1e3
-                        Babs[i, :] = xsec['Babs'] * self.geometry.pathlength * 1e3
-
-                    # Make calibration polynomials
-                    ref['plume'][aero]['Bext'] = np.polyfit(size_log, Bext, 10)
-                    ref['plume'][aero]['Babs'] = np.polyfit(size_log, Babs, 10)
-
-                logger.info('...Done!')
-
-                # Save a copy to avoid lengthy reruns
-                ref['header'] = header
-                outname = self.data_dir + 'solarReference_%s.pkl' % datetime.strftime(datetime.now(), '%Y%m%dT%H%M%S')
-                with open(outname, 'wb') as f:
-                    pickle.dump(ref, f)
-
+       
         # ---------------------------------------------------------------------
         # 3: Emission geometry
         # ---------------------------------------------------------------------
-        elif self.type == 'emission':
+        if self.type == 'emission':
 
             # Copy atm profile to Analyser level
             self.atm = self.geometry.atm
@@ -1337,7 +901,7 @@ class Analyser(object):
         self.clear_list = clear_list
 
 # ======================================================================================================================
-#                                        Generate clear sky
+#                                        Generate self emission background
 # ======================================================================================================================
     def makeSelfEmission(self):
 
@@ -1524,8 +1088,6 @@ class Analyser(object):
         # Get the right forward
         if self.type == 'emission':
             forwardModel = self.forwardEmission
-        else:
-            forwardModel = self.forwardTransmission
 
         # Check if spectrum requires preprocessing
         if preProcess:
@@ -1576,88 +1138,6 @@ class Analyser(object):
             self.p0 = self.params.fittedValuesList()
 
         return fit_result
-
-# ======================================================================================================================
-#                                          Transmission Forward Model
-# ======================================================================================================================
-    def forwardTransmission(self, wave_x, *p0):
-        """
-        
-        :param wave_x: 
-        :param p0: 
-        :return: 
-        """
-        # Get dictionary of fitted parameters
-        params = self.params
-        p = params.valuesDict()
-
-        # Update the fitted parameter values with those supplied to the forward
-        i = 0
-        for par in params.values():
-            if par.vary:
-                p[par.name] = p0[i]
-                i += 1
-            else:
-                p[par.name] = par.value
-
-        # Unpack polynomial parameters and construct background polynomial
-        poly_object = [p[n] for n in p if 'poly' in n]
-        if len(poly_object) == 0:
-            bg_poly = 1
-        else:
-            bg_poly = np.polyval(poly_object, self.model_grid)
-
-        # Use a generalised planck function behind the polynomial
-        if params['source_temp'].vary:
-            Bp = planck(self.model_grid, p['source_temp'])
-            # Bp = Bp / Bp.max()
-        else:
-            Bp = 1
-
-        # Calculate the gas optical depth spectra for Atmospheric Gases
-        atm_gases = [params[n].name for n in p if params[n].atm_gas]
-        OD_atm = 0
-        for gas in atm_gases:
-            if gas in continuum_gases:
-                OD_atm = OD_atm + np.polyval(self.reference['atm']['OD_calib'][gas], p[gas])
-            else:
-                OD_atm = OD_atm + p[gas] * self.reference['atm'][gas]
-        T_atm = np.exp(-OD_atm)
-
-        # Calculate the gas optical depth spectra for Plume Gases
-        plume_gases = [params[n].name for n in p if params[n].plume_gas]
-        OD_plume = 0
-        for gas in plume_gases:
-            if gas in continuum_gases:
-                OD_plume = OD_plume + np.polyval(self.reference['plume']['OD_calib'][gas], p[gas])
-            else:
-                OD_plume = OD_plume + p[gas] * self.reference['plume'][gas]
-        T_plume = np.exp(-OD_plume)
-
-        # Calculate the gas optical depth spectra for Plume Aerosols
-        plume_aero = [params[n].name for n in p if params[n].plume_aero]
-        OD_aero = 0
-        for aero in plume_aero:
-            OD_aero = OD_aero + p[aero] * np.polyval(self.reference['plume'][aero]['Bext'], np.log10(p[aero + '_deff']))
-        T_aero = np.exp(-OD_aero)
-
-        # Compute model spectrum at full resolution
-        F_raw = Bp * bg_poly * T_atm * T_plume * T_aero
-
-        # Generate ILS and convolve
-        kernel = ils(fov=p['fov'], n_per_wave=self.n_per_wave, start_wave=wave_x.min())['kernel']
-        F_conv = np.convolve(F_raw, kernel, 'same')
-
-        # Apply offset
-        F_offset = F_conv + p['offset']
-
-        # Apply shift to the model_grid
-        shift_model_grid = np.add(self.model_grid, p['nu_shift'])
-
-        # Interpolate model spectrum onto spectrometer grid
-        model = griddata(shift_model_grid, F_offset, wave_x, method='cubic')
-
-        return model
 
 # ======================================================================================================================
 #                                          Emission Forward Model
@@ -1798,59 +1278,34 @@ class Analyser(object):
         # ---------------------------------------------------------------------
         # Geometry drawing
         # ---------------------------------------------------------------------
-        if self.geometry.type == 'layer':
-
-            msg += f'|{"ATMOSPHERE":^{width // 2}}' + f'|{"PLUME":^{width // 2}}' + '|\n'
-            msg += f'|{"Temp: %i K" % self.geometry.atm_temp:^{width // 2}}' \
-                   + f'|{"Temp: %i K" % self.geometry.plume_temp:^{width // 2}}' + '|\n'
-            msg += f'|{"Pres: %i mb" % self.geometry.atm_pres:^{width // 2}}' \
-                   + f'|{"Pres: %i mb" % self.geometry.plume_pres:^{width // 2}}' + '|\n'
-            msg += '|' + '  __'.ljust(width // 2, ' ') + '|' + '\ | / '.rjust(width // 2, ' ') + '|\n'
-            msg += '|' + ' |__|'.ljust(width // 2, '-') + '|' + ' - o - '.rjust(width // 2, '-') + '|\n'
-            msg += '|' + '  /\ '.ljust(width // 2, ' ') + '|' + '/ | \ '.rjust(width // 2, ' ') + '|\n'
-            msg += f'|{"[%s]" % ", ".join(atm_gases):^{width // 2}}' \
-                   + f'|{"[%s]" % ", ".join(plume_gases):^{width // 2}}' + '|\n'
-            msg += f'|{"":^{width // 2}}' \
-                   + f'|{"[%s]" % ", ".join(plume_aero):^{width // 2}}' + '|\n'
-            msg += f'|{"":^{width // 2}}' \
-                   f'|{"":^{width // 2}}' + '|\n'
-            msg += '|   <' + (" Pathlength : %.2f km " % self.geometry.pathlength).center(width - 8, '-') + '>   |\n'
-
-        else:
-            if self.geometry.type == 'solar':
-                msg += '|' + '               \ | / '.ljust(width, ' ') + '|\n'
-                msg += '|' + '               - o - '.ljust(width // 2, ' ') + ' ' + 'ATMOSPHERE '.center(width // 2,
-                                                                                                         ' ') + '|\n'
-                msg += '|' + '               / | \ '.ljust(width // 2, ' ') \
-                       + f'|{"[%s]" % ", ".join(atm_gases):^{width // 2}}' + '|\n'
-            if self.geometry.type == 'emission':
-                msg += '|' + '                  /'.ljust(width, ' ') + '|\n'
-                msg += '|' + '                 /'.ljust(width // 2, ' ') + ' ' + 'ATMOSPHERE '.center(width // 2,
-                                                                                                      ' ') + '|\n'
-                msg += '|' + '                /'.ljust(width // 2,
-                                                       ' ') + ' ' + f'{"[%s]" % ", ".join(atm_gases):^{width // 2}}' + '|\n'
-            msg += '|' + '               /'.ljust(width // 2 - 10, ' ') + ''.center(21, '_') \
-                   + ''.rjust(width // 2 - 10, ' ') + '|\n'
-            msg += '|' + '              /'.ljust(width // 2 - 11, ' ') + '/' + 'PLUME LAYER'.center(21, ' ') \
-                   + '\ '.ljust(width // 2 - 10, ' ') + '|\n'
-            msg += '|' + '             /'.ljust(width // 2 - 12, ' ') + '/ ' + (
-                        'Temp: %i K' % self.geometry.plume_temp).center(21, ' ') \
-                   + ' \ '.ljust(width // 2 - 10, ' ') + '|\n'
-            msg += '|' + '___________ /'.ljust(width // 2 - 13, '_') + '/ ' + (
-                        'Pres: %i mb' % self.geometry.plume_pres).center(21, ' ') \
-                   + '   \_' + (' Height: %.2f km ' % self.geometry.plume_height).center(width // 2 - 14, '_') + '|\n'
-            msg += '|' + '           /'.ljust(width // 2 - 13, ' ') + '\ ' + ("[%s]" % ', '.join(plume_gases)).center(21,
-                                                                                                                      ' ') \
-                   + '   /' + (' Thickness: %.2f km ' % self.geometry.plume_thickness).center(width // 2 - 13,
+        if self.geometry.type == 'emission':
+            msg += '|' + '                  /'.ljust(width, ' ') + '|\n'
+            msg += '|' + '                 /'.ljust(width // 2, ' ') + ' ' + 'ATMOSPHERE '.center(width // 2,
                                                                                                   ' ') + '|\n'
-            msg += '|' + '          /'.ljust(width // 2 - 12, ' ') + '\ ' + ("[%s]" % ', '.join(plume_aero)).center(21, ' ') \
-                   + ' / '.ljust(width // 2 - 10, ' ') + '|\n'
-            msg += '|' + '         /'.ljust(width // 2 - 11, ' ') + '\_' + ''.center(20, '_') \
-                   + '/'.ljust(width // 2 - 10, ' ') + '|\n'
-            msg += '|' + '      __/' + (' Angle: %.1f deg' % self.geometry.elev).ljust(width - 9, ' ') + '|\n'
-            msg += '|' + '     |__|------------------'.ljust(width, ' ') + '|\n'
-            msg += '|' + '      /\ '.ljust(width // 2, ' ') + ' ' + \
-                   ('Observer height: %.2f km' % self.geometry.obs_height).center(width // 2, ' ') + '|\n'
+            msg += '|' + '                /'.ljust(width // 2,
+                                                   ' ') + ' ' + f'{"[%s]" % ", ".join(atm_gases):^{width // 2}}' + '|\n'
+        msg += '|' + '               /'.ljust(width // 2 - 10, ' ') + ''.center(21, '_') \
+               + ''.rjust(width // 2 - 10, ' ') + '|\n'
+        msg += '|' + '              /'.ljust(width // 2 - 11, ' ') + '/' + 'PLUME LAYER'.center(21, ' ') \
+               + '\ '.ljust(width // 2 - 10, ' ') + '|\n'
+        msg += '|' + '             /'.ljust(width // 2 - 12, ' ') + '/ ' + (
+                    'Temp: %i K' % self.geometry.plume_temp).center(21, ' ') \
+               + ' \ '.ljust(width // 2 - 10, ' ') + '|\n'
+        msg += '|' + '___________ /'.ljust(width // 2 - 13, '_') + '/ ' + (
+                    'Pres: %i mb' % self.geometry.plume_pres).center(21, ' ') \
+               + '   \_' + (' Height: %.2f km ' % self.geometry.plume_height).center(width // 2 - 14, '_') + '|\n'
+        msg += '|' + '           /'.ljust(width // 2 - 13, ' ') + '\ ' + ("[%s]" % ', '.join(plume_gases)).center(21,
+                                                                                                                  ' ') \
+               + '   /' + (' Thickness: %.2f km ' % self.geometry.plume_thickness).center(width // 2 - 13,
+                                                                                              ' ') + '|\n'
+        msg += '|' + '          /'.ljust(width // 2 - 12, ' ') + '\ ' + ("[%s]" % ', '.join(plume_aero)).center(21, ' ') \
+               + ' / '.ljust(width // 2 - 10, ' ') + '|\n'
+        msg += '|' + '         /'.ljust(width // 2 - 11, ' ') + '\_' + ''.center(20, '_') \
+               + '/'.ljust(width // 2 - 10, ' ') + '|\n'
+        msg += '|' + '      __/' + (' Angle: %.1f deg' % self.geometry.elev).ljust(width - 9, ' ') + '|\n'
+        msg += '|' + '     |__|------------------'.ljust(width, ' ') + '|\n'
+        msg += '|' + '      /\ '.ljust(width // 2, ' ') + ' ' + \
+               ('Observer height: %.2f km' % self.geometry.obs_height).center(width // 2, ' ') + '|\n'
 
         msg += f'{"=" * (width + 2)}\n'
 
@@ -1954,14 +1409,6 @@ class FitResult(object):
                         value = popt[i]
                         partial[i] = value
                 self.bkg = self.fwd_model(self.grid, *partial)
-
-            else:
-                p_object = [params[x].fit_val for x in self.params if 'poly' in x]
-                bkg = np.polyval(p_object, self.grid)
-                if params['source_temp'].vary:
-                    bkg = bkg * planck(self.grid, params['source_temp'].value)
-                bkg = bkg + params['offset'].fit_val
-                self.bkg = bkg
 
         # If not then return nans
         else:
