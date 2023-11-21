@@ -11,7 +11,7 @@ This module contains objects to define a spectral fit:
 import copy
 import numpy as np
 from collections import OrderedDict
-from atmosphere import readAtm, modifyAtm, scaleAtm, resampleAtm
+from atmosphere import readAtm, modifyAtm, resampleAtm
 from initialise import readStandard
 
 
@@ -62,23 +62,14 @@ class Parameters(OrderedDict):
 
             self.__setitem__(param.name, param)
 
-    def extract(self, fit=None, retrieval=None):
+    def extract(self, fit, retrieval, geometry):
         """Extract parameters from a FIT section in the config file"""
-
-        if fit is None:
-            raise ValueError("MUST supply a fit dictionary")
-
-        if retrieval is None:
-            retrieval = Retrieval()
 
         std = readStandard()
 
         # Unpack polynomial parameters
-        if 'polydeg' in fit.keys():     # Overwrite if one is given in an individual fit
-            if fit['polydeg'] is not None:
-                polydeg = int(fit['polydeg'])
-            else:
-                polydeg = int(retrieval.polydeg)
+        if fit['polydeg'] is not None:
+            polydeg = int(fit['polydeg'])
         else:
             polydeg = int(retrieval.polydeg)
         for deg in range(polydeg):
@@ -135,17 +126,27 @@ class Parameters(OrderedDict):
                            min=std[species]['vmin'], max=std[species]['vmax'])
 
         # Add the spectral grid parameters
-        self.add('fov', value=retrieval.fov, min=0.001, max=0.5, vary=retrieval.fit_fov)
-        self.add('nu_shift', value=retrieval.nu_shift, min=-10, max=+10, vary=retrieval.fit_shift)
+        self.add('fov', value=retrieval.fov, min=0.01, max=0.1, vary=retrieval.fit_fov, target='fov' in targets)
+        self.add('max_opd', value=retrieval.max_opd, min=retrieval.max_opd * 0.5, max=retrieval.max_opd * 1.2,
+                 vary=retrieval.fit_max_opd, target='max_opd' in targets)
+        self.add('nu_shift', value=retrieval.nu_shift, min=-1.0, max=+1.0, vary=retrieval.fit_shift)
         self.add('offset', value=retrieval.offset, vary=retrieval.fit_offset)
-        self.add('source_temp', value=retrieval.source_temp, min=100, vary=retrieval.fit_source_temp)
+
+        # Add the special parameters for layer fits
+        if retrieval.type == 'layer':
+            self.add('source_temp', value=retrieval.source_temp, min=800, max=5000, vary=retrieval.fit_source_temp)
+            self.add('gas_temp', value=geometry.plume_temp, min=300, max=800, vary=retrieval.fit_gas_temp,
+                     target='gas_temp' in targets)
+            self.add('gas_temp2', value=300, min=geometry.atm_temp, max=500, vary=retrieval.dual_temp)
+            # self.add('gasE_temp', value=geometry.plume_temp, min=300, max=800, vary=retrieval.model_gas_emission)
+            self.add('E_frac', value=1.0, min=0.0, max=2.0, vary=retrieval.model_gas_emission,
+                     target='gas_temp' in targets and retrieval.model_gas_emission)
 
         # Add the special parameters for emission fits
         if retrieval.type == 'emission':
             self.add('dt_plume', value=retrieval.dt_plume, vary=retrieval.fit_tplume)
             self.add('dt_prox', value=retrieval.dt_prox, vary=retrieval.fit_tprox)
             self.add('H2O_sc', value=1.0, min=0.0, max=4.0, vary=retrieval.H2O_scaling > 0)
-
 
     def update_values(self, new_values):
         """ Update the values of each Parameter in order """
@@ -158,6 +159,10 @@ class Parameters(OrderedDict):
     def valuesDict(self):
         """ Return an ordered dictionary of all parameter values """
         return OrderedDict((p.name, p.value) for p in self.values())
+
+    def poptNamesList(self):
+        """ Return a list of the names of all fitted parameters """
+        return [(p.name) for p in self.values() if p.vary]
 
     def atmGasList(self):
         """ Return a list of the names of atmospheric gases """
@@ -385,17 +390,17 @@ class Parameter(object):
 
 class Geometry(object):
     """
-    Geometry object describing the viewinng geometry and environmental conditions for the retrieval
+    Geometry object describing the viewing geometry and environmental conditions for the retrieval
     """
 
     def __init__(self, type, obs_height=0.0, elev=90.0, obs_temp=None, obs_RH=None,
-                 pathlength=0.1, plume_temp=298, plume_pres=1013, plume_height=None, plume_thickness=None,
+                 pathlength=0.1, plume_temp=298, plume_pres=1013, plume_height=None, plume_thickness=0.1,
                  atm_temp=298, atm_pres=1013, atm_path='./atm/mls.atm', sounding=None, layer_model=1):
         """ Initialise the geometry """
         self.type = type
         if type == 'layer':
             self.pathlength = pathlength
-            self.plume_thickness = pathlength
+            self.plume_thickness = plume_thickness
             self.atm_temp = atm_temp
             self.atm_pres = atm_pres
             self.plume_temp = plume_temp
@@ -484,9 +489,13 @@ class Retrieval(object):
     def __init__(self, type='layer',
                  update_params=False,
                  use_bounds=False,
-                 plume_aero=None,
                  fit_size_aero=False,
                  use_Babs_aero=True,
+                 model_gas_emission=False,
+                 fit_gas_temp=False,
+                 dual_temp=False,
+                 fit_source_temp=False,
+                 source_temp=1000,
                  fit_difference=True,
                  use_bbt=False,
                  bb_drift=False,
@@ -498,13 +507,18 @@ class Retrieval(object):
                  H2O_scaling=3,
                  subtract_self=True,
                  no_gas=True,
-                 fix_envelope=False,
-                 polydeg=3,
-                 fit_source_temp=False,
-                 source_temp=1000,
-                 unified=False,
+                 force_param=None,
+                 seed_param =None,
+                 df_dir=None,
+                 use_source_E=False,
+                 E_file=None,
+                 use_residual=False,
+                 res_dir=None,
                  fit_fov=True,
                  fov=0.03,
+                 fit_max_opd=False,
+                 max_opd=1.8,
+                 apod_type='NB-medium',
                  fit_shift=True,
                  nu_shift=0,
                  fit_offset=False,
@@ -515,25 +529,34 @@ class Retrieval(object):
         self.update_params = update_params
         self.use_bounds = use_bounds
         # Background fitting
-        self.fix_envelope = fix_envelope
-        self.polydeg = int(polydeg)
-        self.fit_source_temp = fit_source_temp
-        self.source_temp = float(source_temp)
-        self.unified = unified
+        self.use_source_E = use_source_E
+        self.E_file = E_file
+        self.use_residual = use_residual
+        self.res_dir = res_dir
         # Spectral parameters
         self.fit_fov = fit_fov
         self.fov = float(fov)
+        self.fit_max_opd = fit_max_opd
+        self.max_opd = float(max_opd)
+        self.apod_type = apod_type
         self.fit_shift = fit_shift
         self.nu_shift = float(nu_shift)
         self.fit_offset = fit_offset
         self.offset = float(offset)
         # Aerosols
-        self.plume_aero = plume_aero
         self.fit_size_aero = fit_size_aero
         self.use_Babs_aero = use_Babs_aero
+        self.force_param = force_param
+        self.seed_param = seed_param
+        self.df_dir = df_dir
         if type == 'layer':
             self.subtract_self = subtract_self
             self.no_gas = no_gas
+            self.fit_gas_temp = fit_gas_temp
+            self.dual_temp = dual_temp
+            self.model_gas_emission = model_gas_emission
+            self.fit_source_temp = fit_source_temp
+            self.source_temp = float(source_temp)
         elif type == 'emission':
             self.fit_difference = fit_difference
             self.use_bbt = use_bbt

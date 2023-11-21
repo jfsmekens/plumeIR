@@ -13,19 +13,23 @@ invalid_extensions = ['pkl', 'csv', 'txt', 'ini', 'dat', 'xls', 'xlsx', 'doc', '
 
 # Gas species in RFM + those extracted from NIST
 rfm_gases = ['H2O', 'CO2', 'SO2', 'CO', 'NO', 'O3', 'N2O', 'NO2', 'NH3', 'HNO3', 'CH4', 'O2', 'HCl', 'HF', 'HBr',
-               'HI', 'H2S', 'N2', 'ClO', 'SF6']
+             'HI', 'H2S', 'N2', 'ClO', 'SF6', 'SO3']
 special_gases = ['SiF4']
 possible_gases = rfm_gases + special_gases
 
 possible_aeros = ['H2SO4', 'ASH', 'WATER']
 
 # Interesting Ratios: If any combination of 2 targets makes one of those ratios, it will be plotted
-interesting_ratios = ['CO2:SO2', 'H2O:SO2', 'H2O:CO2', 'CO2:CO', 'CO:SO2', 'SO2:HCl', 'SO2:HF',
-                      'SO2:SiF4', 'HCl:HF', 'SO2:H2SO4', 'SO4:SO2', 'N/A:N/A']
+interesting_ratios = ['CO2:SO2', 'H2O:SO2', 'H2O:CO2', 'CO:SO2', 'SO2:HCl', 'SO2:HF', 'SO2:H2S', 'SO2:SO3',
+                      'SO2:SiF4', 'HCl:HF', 'SO2:H2SO4', 'SO4:SO2', 'H2SO4:ASH', 'H2O:WATER', 'N/A:N/A']
 
 # Continuum Gases: gases in this list are treated differently when creating a reference
-#       (inlcude gases with continuum and/or line mixing issues)
-continuum_gases = ['H2O']
+#       (include gases with continuum and/or line mixing issues)
+continuum_gases = ['H2O', 'CO2']
+
+# Available Apodization functions for the ILS
+apod_types = ['Boxcar', 'Uniform', 'Triangular', 'Blackman-Harris', 'Happ-Genzel', 'Hamming', 'Lorenz', 'Gaussian',
+                  'NB weak', 'NB medium', 'NB strong', 'Cosine']
 
 # Molecular weights of all gases
 weights = {'H2O': 18.01528,
@@ -35,6 +39,7 @@ weights = {'H2O': 18.01528,
            'CH4': 16.04,
            'O2': 15.999,
            'SO2': 64.066,
+           'SO3': 80.06,
            'HCl': 36.458,
            'HF': 20.01,
            'CO': 28.01,
@@ -54,6 +59,7 @@ plot_colors = {'H2O_sc': 'lightblue',
                'N2O': 'gold',
                'CH4': 'darkviolet',
                'SO2': 'tab:red',
+               'SO3': 'tab:orange',
                'CO': 'maroon',
                'HCl': 'cyan',
                'HF': 'magenta',
@@ -63,9 +69,23 @@ plot_colors = {'H2O_sc': 'lightblue',
                'H2SO4': 'tab:green',
                'ASH': 'tab:grey',
                'WATER': 'deepskyblue',
+               'gas_temp': 'orange',
+               'E_frac': 'k',
+               'fov': 'k',
+               'max_opd': 'k',
                'R2': 'k',
                'RMSE': 'k',
-               'N/A': 'w'}
+               'N/A': 'w',
+               'meas': 'k',
+               'model': 'r',
+               'bkg': 'r',
+               'res': 'k',
+               'scat_all': 'tab:grey',
+               'scat_scroll': 'tab:red',
+               'scat_last': 'b',
+               'regress': 'k',
+               'intercept': 'darkcyan',
+               'confidence': 'k'}
 dark_colors = {'H2O_sc': 'lightblue',
                'H2O': 'tab:blue',
                'CO2': 'tab:orange',
@@ -82,9 +102,22 @@ dark_colors = {'H2O_sc': 'lightblue',
                'H2SO4': 'tab:green',
                'ASH': 'tab:grey',
                'WATER': 'deepskyblue',
+               'gas_temp': 'orange',
+               'fov': 'w',
+               'max_opd': 'w',
                'R2': 'w',
                'RMSE': 'w',
-               'N/A': 'k'}
+               'N/A': 'k',
+               'meas': 'w',
+               'model': 'r',
+               'bkg': 'r',
+               'res': 'w',
+               'scat_all': 'w',
+               'scat_scroll': 'tab:pink',
+               'scat_last': 'dodgerblue',
+               'regress': 'w',
+               'intercept': 'tab:cyan',
+               'confidence': 'w'}
 
 # Plot Color Maps: A dedicated colormap for each species
 plot_cmaps = {'H2O': 'Blues',
@@ -108,6 +141,7 @@ plot_cmaps = {'H2O': 'Blues',
 # Pretty name: Mathtext for each species to use in labels
 pretty_names = {'H2O': '$H_2O$',
                 'SO2': '$SO_2$',
+                'SO3': '$SO_3$',
                 'CO2': '$CO_2$',
                 'NH3': '$NH_3$',
                 'O3': '$O_3$',
@@ -116,17 +150,20 @@ pretty_names = {'H2O': '$H_2O$',
                 'CO': '$CO$',
                 'HCl': '$HCl$',
                 'HF': '$HF$',
-                'NH3': '$NH_3$',
                 'SiF4': '$SiF_4$',
                 'H2S': '$H_2S$',
                 'SO4': '$SO_4$',
-                'H2SO4': '$SA$',
-                'ASH': '$ASH$',
-                'WATER': '$H_2O droplets$',
+                'H2SO4': '$SO_4$ $aerosol$',
+                'ASH': '$ash$',
+                'WATER': '$H_2O$ $aerosol$',
                 'ICE': '$ICE$',
                 'time': 'Local Time',
                 'R2': '$R^2$',
                 'RMSE': 'RMS error',
+                'gas_temp': '$T_{gas}$',
+                'E_frac': r'$X{\epsilon}$',
+                'fov': '$FOV$',
+                'max_opd': '$OPD_{max}$',
                 'N/A': '$n/a$'}
 
 # Pretty Ratios: Use the math text in pretty_names to create pretty ratios for labels
@@ -136,20 +173,59 @@ for ratio in interesting_ratios:
     pretty_ratios[ratio] = ':'.join([pretty_names[yname], pretty_names[xname]])
 
 # Pretty Units: Mathtext with the units of SCD in molar or mass
-pretty_labels = {'molar': ' SCD [$molec.cm^{-2}$]',
-                 'mass': ' SCD [$g.m^{-2}$]'}
+pretty_labels = {'molar': ' SCD [$molec \cdot cm^{-2}$]',
+                 'mass': ' SCD [$g \cdot m^{-2}$]'}
 
-# Logo: The plumeIR logo, version and fonts to display them
+# Logo: The plumeIR_dev logo, version and fonts to display them
 logotext = 'plumeIR'
 logofont = {'family': 'Palatino',
-            'color':  'darkred',
+            'color':  'tab:red',
             'weight': 'bold',
             'style': 'italic',
             'size': 18}
-versiontext = 'v0.2'
+versiontext = 'v0.7'
 versionfont = {'family': 'Palatino',
-               'color':  'darkred',
+               'color':  'tab:red',
                'weight': 'normal',
                'style': 'italic',
                'size': 10}
+
+# Primary windows
+primary_windows = {'SO2': [2400, 2550],
+                   'HCl': [2600, 2900],
+                   'HF': [4000, 4100],
+                   'CO2': [2020, 2150],
+                   'SiF4': [1010, 1040]}
+
+# Secondary windows
+secondary_windows = {'SO2': [1080, 1120],
+                     'HCl': [5730.0, 5780.0],
+                     'HF': [4000, 4100],
+                     'CO2': [2020, 2150]}
+# Microwindows
+micro_windows = {'SO2': [2400, 2550],
+                 'HCl': [[2727.0, 2728.5], [2775.0, 2776.50], [2818.75, 2820.35], [2820.75, 2822.35], [2843.0, 2844.4],
+                         [2903.35, 2904.85], [2923.0, 2924.50], [2925.0, 2926.75], [2942.0, 2943.5], [2960.3, 2961.825],
+                         [2962.3, 2964.0], [2995.0, 2996.5]],
+                 'HF': [4000, 4100],
+                 'CO2': [2020, 2150]}
+
+# Unit notations
+units = {'rad': '$mW$ / ($m^{2} \cdot sr \cdot cm^{-1}$)',
+         'bbt': '$K$',
+         'opt': '$a.u.$',
+         'wn': '$cm^{-1}$',
+         'um': '$\mu$$m$',
+         'nm': '$nm$',
+         'molec.cm^-2': '$molec \cdot cm^{-2}$',
+         'ppmm': '$ppm \cdot m$',
+         'g.m^-2': '$g \cdot m^{-2}$',
+         'ppmv': '$ppm$',
+         'relh': '$%$',
+         'N_density': '$cm^{-3}',
+         'N_density_SI': '$m^{-3}',
+         'g.cm^-3': '$g \cdot cm^{-3}$',
+         'g.m^-3': '$g \cdot m^{-3}$'}
+
+
 

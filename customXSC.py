@@ -13,10 +13,11 @@ import pickle
 import jcamp
 import PyMieScatt
 from subprocess import run, DEVNULL
-from atmosphere import *
-import glob
+from atmosphere import writeRFMdrv, readRFM
+from glob import glob
 from tqdm import tqdm
 from constants import *
+from datetime import datetime
 
 # ---- Small function tool to make gaussian profile ---
 def gauss(x, mu, sig):
@@ -120,7 +121,7 @@ def makePSD(mean=1.0, sigma=1.5, n=50, fname=None):
 # ======================================================================================================================
 #                                   Make custom cross-sections for odd gases
 # ======================================================================================================================
-def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, species='sif4'):
+def makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, species='sif4'):
     """
     Use this function to make cross-sections for gases not in the Hitran database. Each gas is manually added in the
         ./xsec/ folder as a JCAMP-JDX file (.jdx) taken from the NIST website. Reference experiment environemental data
@@ -128,22 +129,22 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
 
         Current gases: ['SiF4']
 
-    :param start_wave:  Lower bound of the frequency range for x-axis                           [cm^-1]
-    :param end_wave:    Higher bound of the frequency range for x-axis                          [cm^-1]
-    :param nperwave:    Resolution of the frequency range for x-axis                            [{cm^-1}^-1]
+    :param wn_start:  Lower bound of the frequency range for x-axis                           [cm^-1]
+    :param wn_stop:    Higher bound of the frequency range for x-axis                          [cm^-1]
+    :param nper_wn:    Resolution of the frequency range for x-axis                            [{cm^-1}^-1]
     :param conc:        Concentration for the cross-section                                     [ppm]
     :param temp:        Temperature                                                             [K]
     :param pres:        Pressure                                                                [mbar]
     :param species:     Gas formula (case insensitive)                                          String
     :return: Dictionary with structure:
-                ['wave']:           Wavenumber x-axis                                           [cm^-1]
+                ['wn']:           Wavenumber x-axis                                           [cm^-1]
                 ['Bext']:           Extinction coefficients                                     [m^-1]
                 ['conc']:           Gas concenntration used to calculate cross-section          [ppm]
     """
 
     # Create wavenumber x-axis
-    npts = int((end_wave - start_wave) * nperwave) + 1
-    wave = np.linspace(start_wave, end_wave, npts)
+    npts = int((wn_stop - wn_start) * nper_wn) + 1
+    wn = np.linspace(wn_start, wn_stop, npts)
 
     # If no species is given
     if species is None:
@@ -160,11 +161,11 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
 
         # Extract spectrum and sample onto wavenumber grid
         if data['yunits'] == 'ABSORBANCE':
-            A = np.interp(wave, data['x'], data['y'])
+            A = np.interp(wn, data['x'], data['y'])
         elif data['yunits'] == 'TRANSMITTANCE':
-            A = 1 - np.interp(wave, data['x'], data['y'])
+            A = 1 - np.interp(wn, data['x'], data['y'])
         elif 'micromol/mol' in data['yunits']:
-            xsec = np.interp(wave, data['x'], data['y'])
+            xsec = np.interp(wn, data['x'], data['y'])
 
         # ---------------------------------------------------------------------
         # Determine experiment conditions and calculate cross-section
@@ -181,7 +182,7 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
                 raise ValueError('Gas species %s currently not supported. '
                                  'You may add the JDX file for the desired gas in the ./xsec/ folder '
                                  'and update the reference pressure manually in the source code of the makeGasXSC() functionn'
-                                 'in ./plumeIR/customXSC.py' % species.upper())
+                                 'in ./plumeIR_dev/customXSC.py' % species.upper())
 
             # Number density of target gas in experiment
             Nref = pres_ref / (R * temp_ref)    # in [mol.m^-3]
@@ -202,7 +203,7 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
     elif species in rfm_gases:
 
         # Write RFM driver and run
-        writeRFMdrv(start_wave, end_wave, nperwave, layer=True, pathlength=0.1, gas=species, conc={species: conc},
+        writeRFMdrv(wn_start, wn_stop, nper_wn, layer=True, pathlength=0.1, gas=species, conc={species: conc},
                     temp=temp, pres=pres, out="OPT")
         run('./RFM/source/rfm', stdout=DEVNULL)
 
@@ -218,7 +219,7 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
     out['conc'] = conc
     out['temp'] = temp
     out['pres'] = pres
-    out['wave'] = wave
+    out['wn'] = wn
     out['Bext'] = Bext
 
     return out
@@ -227,7 +228,7 @@ def makeGasXSC(start_wave, end_wave, nperwave, conc=1.0, temp=298, pres=1013, sp
 # ======================================================================================================================
 #                                   Make custom cross-sections for odd gases
 # ======================================================================================================================
-def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False, sigma=None, density=None,
+def makeAerosolXSC(wn_start, wn_stop, nper_wn, size, mass_conc, psd=False, sigma=None, density=None,
                     fname=None, species=None, comp=None, temp=298, save=True):
     """
     This function calculates the Mie scattering properties for aerosols, using complex refractive indices from the ARIA
@@ -239,12 +240,12 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
     Size must be given in microns, and particle concentrations (N) in number per cm^3. PyMieScatt requires input in nm
     and the conversion is done within this function.
 
-    Syntax: out = makeXSC(fname: String, end_wave, n_per_wave, size, N, species='aerosol')
+    Syntax: out = makeXSC(fname: String, wn_stop, nper_wn, size, N, species='aerosol')
 
     :param fname: Pathname to the .ri file containing the refractive indices
-    :param start_wave: Lower wavenumber
-    :param end_wave:
-    :param n_per_wave: Desired resolution of the output spectra. Calculations are performed with a resolution of 1 cm,
+    :param wn_start: Lower wavenumber
+    :param wn_stop:
+    :param nper_wn: Desired resolution of the output spectra. Calculations are performed with a resolution of 1 cm,
                         and the output is extrapolated for higher resolutions.
     :param size: The size over which to calculate the Mie efficiencies. This can be one of two options
             1.  Scalar  -   A single particle size diameter             [um]
@@ -268,7 +269,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
                     ['header']      Header information, as written to file in RFM .xsc file
                     ['PSD']         The supplied PSD structure                              only if size is a PSD
                     ['N']           Particle number concentration                                           [cm^-3]
-                    ['wave']        Wavenumber axis                                                         [cm^-1]
+                    ['wn']        Wavenumber axis                                                         [cm^-1]
                     ['n']           Real part of refractive index
                     ['k']           Imaginary part of refractive index
                     ['m']           Complex expression of refractive index
@@ -303,7 +304,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
                 acid = 72
             else:
                 acid = int(comp * 100)
-                fnames = glob.glob('./xsec/H2SO4*%iK*Myhre*.ri' % temp)
+                fnames = glob('./xsec/H2SO4*%iK*Myhre*.ri' % temp)
                 acids = [float(f.split('_')[1]) for f in fnames]
 
                 def find_nearest(array, value):
@@ -315,6 +316,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
             fname = './xsec/H2SO4_%i_%iK_Myhre_2003.ri' % (acid, temp)
         elif species.upper() == 'ASH': fname = './xsec/ASH_etna_Deguine_2020.ri'
         elif species.upper() == 'WATER': fname = './xsec/H2O_Downing_1975.ri'
+        elif species.upper() == 'ICE': fname = './xsec/ICE_Warren_2008.ri'
 
     # If filename given without a species, determine which it is
     if species is None and fname is not None:
@@ -358,11 +360,11 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
     # Get the density information depending on species
     # ---------------------------------------------------------------------
     if density is None:
-        if species == 'WATER':
+        if species == 'WATER' or species == 'ICE':
             density = 1000
         elif species == 'H2SO4':
             acid_frac = int(fname.split('/')[-1].split('_')[1]) / 100
-            density = 1830 * acid_frac
+            density = 1830 * acid_frac + 1000 * (1 - acid_frac)
         elif species == 'ASH':
             density = 2600
 
@@ -390,7 +392,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
 
         # Compute n & k
         sio2 = round(comp * 100)
-        wave = np.asarray(prata['wn'])
+        wn = np.asarray(prata['wn'])
         n = np.asarray(prata['a_i2'] + prata['b_i2'] * sio2)
         k = np.asarray(prata['c_i2'] + prata['d_i2'] * sio2)
         descrip = '# DESCRIPTION: Refractive indices computed from composition using parametrisation' \
@@ -414,27 +416,27 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
         start = [i for i in range(len(lines)) if "#FORMAT" in lines[i]][0] + 1
 
         # Extract X-axis
-        wave = np.array([float(x.split()[0]) for x in lines[start:-1]])
+        wn = np.array([float(x.split()[0]) for x in lines[start:-1]])
 
         # Extract complex refractive index
         n = np.array([float(x.split()[1]) for x in lines[start:-1]])
         k = np.array([float(x.split()[2]) for x in lines[start:-1]])
 
     # Flip arrays if they are in order of decreasing wavenumbers
-    if wave[0] > wave[-1]:
-        wave = np.flip(wave)
+    if wn[0] > wn[-1]:
+        wn = np.flip(wn)
         n = np.flip(n)
         k = np.flip(k)
 
     # Resample along regular x-axis with 1 cm^1 resolution
-    npts = int(end_wave - start_wave) + 1
-    wave_new = np.linspace(start_wave, end_wave, npts)
-    n = np.interp(wave_new, wave, n)
-    k = np.interp(wave_new, wave, k)
+    npts = int(wn_stop - wn_start) + 1
+    wn_new = np.linspace(wn_start, wn_stop, npts)
+    n = np.interp(wn_new, wn, n)
+    k = np.interp(wn_new, wn, k)
 
     # Turn into appropriate units for PyMieScatt
-    lambda_nm = 1e7 / wave_new
-    m = np.array([np.complex(n[i], k[i]) for i in range(len(wave_new))])
+    lambda_nm = 1e7 / wn_new
+    m = np.array([np.complex(n[i], k[i]) for i in range(len(wn_new))])
 
     # ---------------------------------------------------------------------
     # Check if this particular cross-section has been run before
@@ -448,9 +450,9 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
     elif comp is not None and species == 'H2SO4':
         header['acid'] = acid
     header['fname'] = fname
-    header['start_wave'] = start_wave
-    header['end_wave'] = end_wave
-    header['n_per_wave'] = n_per_wave
+    header['wn_start'] = wn_start
+    header['wn_stop'] = wn_stop
+    header['nper_wn'] = nper_wn
     if size_flag == 0:
         header['size'] = size
         header['mass_conc'] = mass_conc
@@ -462,7 +464,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
         header['fname'] = fname
 
     # List all existing file and compare headers
-    xsec_list = glob.glob('./xsec/customXSC*%s*.pkl' % species.upper())
+    xsec_list = glob('./xsec/customXSC*%s*.pkl' % species.upper())
     xsec_exists = []
     for file in xsec_list:
         with open(file, 'rb') as f:
@@ -496,7 +498,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
             Qsca = []
             Qabs = []
 
-            # Loop over range of wavelengths and get Q
+            # Loop over range of wnlengths and get Q
             pbar = tqdm(total=npts)
             pbar.set_description('%s: %.2f um' % (species, size))
             if species == 'ASH' and comp is not None:
@@ -536,7 +538,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
             Bsca = []
             Babs = []
 
-            # Loop over range of wavelengths
+            # Loop over range of wnlengths
             pbar = tqdm(total=npts * len(bins_nm))
             pbar.set_description('%s: %.2f um' % (species, size))
             if species == 'ASH' and comp is not None:
@@ -571,7 +573,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
                 Qsca.append(np.sum(Qsca_x * frac))
                 Qabs.append(np.sum(Qabs_x * frac))
 
-                # Integrate cross sections (C) over the size fraction
+                # Integrate cross-sections (C) over the size fraction
                 Cext.append(np.sum(Cext_x * frac))
                 Csca.append(np.sum(Csca_x * frac))
                 Cabs.append(np.sum(Cabs_x * frac))
@@ -584,20 +586,20 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
         pbar.close()
 
         # Resample everything using user supplied resolution
-        npts = int(n_per_wave * (end_wave - start_wave)) + 1
-        wave_final = np.linspace(start_wave, end_wave, npts)
-        n_final = np.interp(wave_final, wave_new, n)  # Refractive indices
-        k_final = np.interp(wave_final, wave_new, k)
-        m_final = np.array([np.complex(n_final[i], k_final[i]) for i in range(len(wave_final))])
-        Qext = np.interp(wave_final, wave_new, Qext)  # Efficiencies (Q)
-        Qsca = np.interp(wave_final, wave_new, Qsca)
-        Qabs = np.interp(wave_final, wave_new, Qabs)
-        Cext = np.interp(wave_final, wave_new, Cext)  # Cross-sections (C)
-        Csca = np.interp(wave_final, wave_new, Csca)
-        Cabs = np.interp(wave_final, wave_new, Cabs)
-        Bext = np.interp(wave_final, wave_new, Bext)  # Coefficients (B)
-        Bsca = np.interp(wave_final, wave_new, Bsca)
-        Babs = np.interp(wave_final, wave_new, Babs)
+        npts = int(nper_wn * (wn_stop - wn_start)) + 1
+        wn_final = np.linspace(wn_start, wn_stop, npts)
+        n_final = np.interp(wn_final, wn_new, n)  # Refractive indices
+        k_final = np.interp(wn_final, wn_new, k)
+        m_final = np.array([np.complex(n_final[i], k_final[i]) for i in range(len(wn_final))])
+        Qext = np.interp(wn_final, wn_new, Qext)  # Efficiencies (Q)
+        Qsca = np.interp(wn_final, wn_new, Qsca)
+        Qabs = np.interp(wn_final, wn_new, Qabs)
+        Cext = np.interp(wn_final, wn_new, Cext)  # Cross-sections (C)
+        Csca = np.interp(wn_final, wn_new, Csca)
+        Cabs = np.interp(wn_final, wn_new, Cabs)
+        Bext = np.interp(wn_final, wn_new, Bext)  # Coefficients (B)
+        Bsca = np.interp(wn_final, wn_new, Bsca)
+        Babs = np.interp(wn_final, wn_new, Babs)
 
         # ---------------------------------------------------------------------
         # Create output structure and save file for later use
@@ -612,7 +614,7 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
             out['mass_frac'] = mass_frac
         else:
             out['size'] = size
-        out['wave'] = wave_final    # Wavenumber axis
+        out['wn'] = wn_final    # Wavenumber axis
         out['n'] = n_final
         out['k'] = k_final
         out['m'] = m_final
@@ -631,19 +633,6 @@ def makeAerosolXSC(start_wave, end_wave, n_per_wave, size, mass_conc, psd=False,
 
         if save:
             # Save pickled file
-            # if sigma is not None:
-            #             #     size_info = '%.2fum_%.2fsigma' % (size, sigma)
-            #             # else:
-            #             #     size_info = '%.2fum' % size
-            #             # if species == 'ASH':
-            #             #     if species == 'ASH' and comp is not None:
-            #             #         outname = './xsec/customXSC_%s_%isio2_%s_%i-%icm_%iK.pkl' % (species.upper(), sio2, size_info, start_wave, end_wave, temp)
-            #             #     else:
-            #             #         outname = './xsec/customXSC_%s_fromfile_%s_%i-%icm_%iK.pkl' % (species.upper(), size_info, start_wave, end_wave, temp)
-            #             # elif species == 'H2SO4':
-            #             #     outname = './xsec/customXSC_%s_%iacid_%s_%i-%icm_%iK.pkl' % (species.upper(), acid, size_info, start_wave, end_wave, temp)
-            #             # else:
-            #             #     outname = './xsec/customXSC_%s_%s_%i-%icm_%iK.pkl' % (species.upper(), size_info, start_wave, end_wave, temp)
             outname = './xsec/customXSC_%s_%s.pkl' % (species.upper(), datetime.now().strftime("%y%m%d_%H%M%S"))
             with open(outname, 'wb') as f:
                 pickle.dump(out, f)

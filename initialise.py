@@ -158,7 +158,7 @@ from datetime import datetime
 import numpy as np
 from tqdm import tqdm
 import logging
-import glob
+from glob import glob
 import os
 
 logger = logging.getLogger(__name__)
@@ -190,7 +190,7 @@ def initialiseFit(config_file='./plumeIRconfig.txt', force_ref=False):
     if not os.path.exists(data_dir):
         raise ValueError('Invalid path for data directory: %s does not exist' % data_dir)
     logger.info('Working in: %s' % data_dir)
-    flist = glob.glob(data_dir + '*')
+    flist = glob(data_dir + '*')
     config['DATA']['data_dir'] = data_dir
 
     # Only keep the potential spectra files
@@ -253,7 +253,6 @@ def initialiseFit(config_file='./plumeIRconfig.txt', force_ref=False):
         # Rename
         pbar = tqdm(total=n_spec)
         pbar.set_description('Renaming')
-        # breakpoint()
         for i, fname in enumerate(flist):
             ext = fname.split('.')[-1]
             if ext not in midac_extensions:
@@ -303,22 +302,12 @@ def initialiseFit(config_file='./plumeIRconfig.txt', force_ref=False):
     params = []
     analysers = []
 
-    if retrieval.unified:
-        fit_windows = []
-        param = Parameters()
-        for i, fit in enumerate(fit_dicts):
-            param.extract(fit, retrieval)
-            fit_windows = fit_windows + fit['fit_window']
-        params.append(param)
-        analysers.append(Analyser(param, geometry, fit_windows, retrieval,
-                                  name='UNIFIT', data_dir=data_dir, force_ref=force_ref))
-
     for i, fit in enumerate(fit_dicts):
 
         param = Parameters()
-        param.extract(fit, retrieval)
+        param.extract(fit, retrieval, geometry)
         params.append(param)
-        analysers.append(Analyser(param, geometry, fit['fit_window'], retrieval,
+        analysers.append(Analyser(param, geometry, fit['fit_window'], retrieval=retrieval,
                                   name=names[i], data_dir=data_dir, force_ref=force_ref))
 
     # ---------------------------------------------------------------------

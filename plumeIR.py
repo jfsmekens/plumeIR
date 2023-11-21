@@ -19,16 +19,38 @@ import os
 import logging
 import pickle
 import pandas as pd
+from glob import glob
 from tqdm import tqdm
+import matplotlib as mpl
 
 from spectra import read_spectrum
 from initialise import initialiseFit, readStandard
 from plotting import *
 from atmosphere import writeAtm
 
-dark_mode = False
-if dark_mode:
-    plt.style.use('dark_background')
+# ======================================================================================================================
+#                                  Set up display and saving options
+# ======================================================================================================================
+# Pre-processing data
+resample_spectra = False    # Resample spectra before retrieval
+spacing = 1.0               # New spectral sampling [in cm^-1]
+
+# Visual outputs during run
+# mpl.use("Qt5agg")           # Use Qt to handle the displays (slower)
+dark_mode = False            # Dark background and colors
+force_reference = False     # Force a rerun of the reference file even if it already exists
+plot_reference = False      # Plot spectral reference for each fit?
+plot_analysis = True        # Display results in the Analysis canvas?
+scroll = 50                 # How many spectra to display at any one time
+plot_mass = False           # Plot all ratios as mass ratios?
+show_error = False          # Plot errorbars on the ratio_plots
+regress_type = 'theil'        # Type of linear regression to be used ('siegel' - 'theil' - 'odr')
+fit_error = True            # Consider errors in the linear regression for ratios (only works with ODR)
+
+# Save options
+save_results = False         # Save results to disk? (includes dataframes as .csv and .xlsx)
+save_spectral_fits = False   # Save a file for each spectrum with fitting results (one for each fit as .csv in a subfolder)
+save_frames = False          # Save individual plotting frames during analysis (as .png in a subfolder)
 
 # ======================================================================================================================
 #                                     Set up log output to standard output
@@ -58,15 +80,14 @@ logger.addHandler(handler2)
 # ======================================================================================================================
 logger.info('########## Retrieval run initiated - %s %s ###########' % (logotext, versiontext))
 # Can be initiated by pointing to a file directly
-config_name = './plumeIRconfig_emission.txt'     # Where to get the config from
-config_name = None
+config_name = './plumeIRconfig_layer.txt'     # Where to get the config from
+# config_name = None
 if config_name is not None:
     logger.info('User supplied config file: %s' % config_name)
 
 # Or by using a data directory where the config file can be found
-# datadir = './data/Emission_170322_Vulcano/6/'
-datadir = './data/2021-08-11/'
-# datadir = None
+datadir = '/Users/jfsmekens/Documents/data/2021-08-11/test2/'
+datadir = None
 if datadir is not None:
     config_list = glob(datadir + '*plumeIR*config*.txt')
     if len(config_list) == 0:
@@ -79,33 +100,6 @@ if datadir is not None:
         config_name = config_list[-1]
         logger.info('User supplied datadir: %s' % datadir)
         logger.info('Found %i config files. Using most recent: %s' % (len(config_list), config_name))
-
-# Visual outputs during run
-force_reference = False      # Force a rerun of the reference file even if it already exists
-plot_reference = False      # Plot spectral reference for each fit?
-write_analysis = False       # Write the analysis results in the progress bar?
-plot_analysis = True        # Display results in the Analysis canvas?
-scroll = 50                 # How many spectra to display at any one time
-if not plot_analysis:
-    write_analysis = True   # Write analysis results in the progress bar?
-plotmass = False            # Plot all ratios as mass ratios?
-plot_full_spectrum = False  # Display results in the Full Spectrum canvas
-
-# Visual outputs after analysis
-plot_results = True         # Display results at the end of the analysis
-if plot_results:
-    which = 'all'       # 'ts', 'ratios' or 'all'
-    targets = 'all'     # List of targets to include in plots or 'all'
-    ratios = 'all'      # List of ratios to include in plots or 'all
-    use_cmap = False    # Color ratio plots by a 3rd quantity?df
-    color_by = 'so2:h2so4'  # Which quantity? Any of the target gases or ratios (case insensitive)
-    errorbar = True     # Plot error as errorbars? If not the error is shown as a shaded area in time series instead
-    window = 10         # Moving window to calculate time series of ratios
-    plot_individual = False     # Plot each fit as a separate time series (includes all species including non targets)
-
-# Save results to disk
-save_results = False        # Save results to disk? (includes dataframes as .csv and .xlsx and plots as .png)
-save_frames = False         # Save individual frames during analysis?
 
 
 # ======================================================================================================================
@@ -121,10 +115,6 @@ n_fits = config['n_fits']
 n_targets = config['n_targets']
 n_ratios = config['n_ratios']
 
-# Plot reference if requested
-if plot_reference:
-    for i in range(n_fits):
-        analysers[i].plotReference(save=save_results)
 
 # ======================================================================================================================
 #                                 Make the figure canvas to display the results
@@ -132,10 +122,7 @@ if plot_reference:
 # Make Analysis canvas
 logger.info('Making plot canvas...')
 if plot_analysis:
-    analysis_canvas = makeAnalysisCanvas(config)
-# Make Full Spectrum canvas
-if plot_full_spectrum:
-    spectrum_canvas = makeSpectrumCanvas(config, analysers)
+    analysis_canvas = makeAnalysisCanvas(config, dark_mode=dark_mode)
 
 # ======================================================================================================================
 #                                 Make Dataframes to hold the results
@@ -195,12 +182,19 @@ fitname = 'fitResults_%s' % (datetime.now().strftime("%y%m%d_%H%M%S"))  # Timeco
 outdir = config['DATA']['data_dir'] + fitname + '/'                     # Where to save the results?
 if save_results or save_frames:
     os.mkdir(outdir)    # Create output directory
+    if save_spectral_fits:
+        os.mkdir(outdir + 'spectral_fits/')
 if save_frames:
     os.mkdir(outdir + 'plots/')     # Also create directory for frames
 outnames = []       # List of names for saving individual fits
 for n in range(n_fits):
     outnames.append(outdir + '%s_%s.csv' % (fitname, analysers[n].name))
 outnames.append(outdir + '%s_ALL.csv' % fitname)
+
+# Plot reference if requested
+if plot_reference:
+    for i in range(n_fits):
+        analysers[i].plotReference(save=save_results, outdir=outdir)
 
 pbar = tqdm(total=n_spec, position=0)  # Progress bar
 fails = 0       # Keep track of failed fits
@@ -210,10 +204,9 @@ for i, fname in enumerate(config['DATA']['spec_list']):
     # ---------------------------------------------------------------------
     # Read the spectrum and extract the timestamp
     # ---------------------------------------------------------------------
-    if not write_analysis:
-        postfix = 'Processing file: %s' % fname.split('/')[-1] + '; %i failed' % fails
-        pbar.set_postfix_str(postfix)
     spectrum = read_spectrum(fname)
+    if resample_spectra:
+        spectrum.degrade(spacing=spacing)   # Degrade to lower resolution
     dtime = spectrum.dtime
     time = datetime.strftime(dtime, '%Y/%m/%d - %H:%M:%S.%f')
 
@@ -221,7 +214,7 @@ for i, fname in enumerate(config['DATA']['spec_list']):
     # Fit the spectrum and read out the parameters
     # ---------------------------------------------------------------------
     # Initiate empty lists
-    results = []
+    results = [None] * n_fits
     row_all = [fname.split('/')[-1], dtime]  # Summary row
 
     # --- Loop through fits ---
@@ -229,10 +222,19 @@ for i, fname in enumerate(config['DATA']['spec_list']):
 
         # Fit name
         fit_name = analysers[n].name
-
         # --- 1: Fit the spectrum ---
-        results.append(analysers[n].fitSpectrum(spectrum, update_params=retrieval.update_params,
-                       use_bounds=retrieval.use_bounds, findEnvelope=retrieval.fix_envelope))
+        results[n] = analysers[n].fitSpectrum(spectrum, update_params=retrieval.update_params,
+                       use_bounds=retrieval.use_bounds)
+
+        # if analysers[n].master:
+        #     update = [name for name, p in analysers[n].params.items() if p.target]
+        #     for k, a in enumerate(analysers):
+        #         if k != n:
+        #             for name, p in analysers[k].params.items():
+        #                 if name in update:
+        #                     a.params[name].value = analysers[n].params[name].value
+        #                     a.params[name].vary = False
+        #                     print('Updating fit %i for %s: %.2f' % (k, name, analysers[n].params[name].fit_val))
 
         # --- 2: Read out parameters ---
         row_n = [fname.split('/')[-1], dtime]   # Individual row
@@ -292,20 +294,30 @@ for i, fname in enumerate(config['DATA']['spec_list']):
         fails += 1
 
     # ---------------------------------------------------------------------
-    # Update plots
+    # Update plots and console
     # ---------------------------------------------------------------------
-    if plot_full_spectrum:
-        updateSpectrumCanvas(spectrum_canvas, i, spectrum, results, save=save_frames, outdir=outdir)
-
     if plot_analysis:
-        updateAnalysisCanvas(analysis_canvas, i, config, results, df_sum, geometry,
-                             save=save_frames, outdir=outdir, scroll=scroll, plotmass=plotmass)
-    if write_analysis:
-        postfix = []
-        postfix.append('R2: %.3f' % df_sum['MIN R2'][i])
-        for target in config['TARGET']['targets']:
-            postfix.append('%s: %.2f' % (target, df_sum['%s_val' % target][i]))
-        pbar.set_postfix_str("; ".join(postfix) + '; %i failed' % fails)
+            updateAnalysisCanvas(analysis_canvas, i, config, results, df_sum, geometry, save=save_frames, outdir=outdir,
+                               scroll=scroll, plot_mass=plot_mass, show_error=show_error, regress=regress_type, fit_error=fit_error)
+    # Set the postfix with info about the retrieval
+    postfix = []
+    postfix.append('R2: %.3f' % df_sum['MIN R2'][i])
+    for target in config['TARGET']['targets']:
+        if target in possible_gases + possible_aeros:
+            postfix.append('%s: %.2g' % (target, df_sum['%s_scd [molec.cm^-2]' % target][i]))
+    if 'source_temp' in df_sum.keys():
+        postfix.append('Tsource: %.0f K' % df_sum['source_temp'][i])
+    if 'gas_temp' in df_sum.keys():
+        postfix.append('Tgas: %.0f K' % df_sum['gas_temp'][i])
+    if 'gas_temp2' in df_sum.keys():
+        postfix.append('Tgas2: %.0f K' % df_sum['gas_temp2'][i])
+    if 'E_frac' in df_sum.keys():
+        postfix.append('E_frac: %.2f' % df_sum['E_frac'][i])
+    if 'fov' in df_sum.keys():
+        postfix.append('FOV: %.2f' % df_sum['fov'][i])
+    if 'max_opd' in df_sum.keys():
+        postfix.append('OPDmax: %.2f' % df_sum['max_opd'][i])
+    pbar.set_postfix_str("; ".join(postfix) + '; %i failed' % fails)
 
     # ---------------------------------------------------------------------
     # Save dataframes to csv files, full results to pkl file
@@ -313,6 +325,19 @@ for i, fname in enumerate(config['DATA']['spec_list']):
     if save_results:
         for n in range(n_fits):
             df[n].to_csv(outnames[n])
+            if save_spectral_fits:
+                outname = outdir + 'spectral_fits/%s_%s.csv' % (datetime.strftime(dtime, '%Y_%m_%d_%H_%M_%S'),
+                                                                analysers[n].name)
+                csv = pd.DataFrame({'wn': results[n].grid,
+                                    'meas': results[n].spec,
+                                    'model': results[n].model,
+                                    'res': results[n].res,
+                                    'bkg': results[n].bkg,
+                                    'bg_poly': results[n].bg_poly,
+                                    'E': results[n].E,
+                                    'instr_res': results[n].instr_res,
+                                    'offset': results[n].offset})
+                csv.to_csv(outname)
         df_sum.to_csv(outnames[-1])
 
         full_results.append(results)
@@ -338,7 +363,7 @@ if save_results:
             df[n].to_excel(writer, sheet_name=analysers[n].name)
         df_sum.to_excel(writer, sheet_name='Target')
 
-    logger.info('Analysis finished! Results saved to: %s' % outname)
+    logger.info('Analysis finished! Results saved to: %s' % outdir)
 
     # Save a copy of the config file to results directory
     outname = outdir + fitname + '_config.txt'
@@ -369,19 +394,6 @@ if save_results:
         
 else:
     logger.info('Analysis finished! Save mode was off. Run again to save results')
-
-# ---------------------------------------------------------------------
-# Plot results
-# ---------------------------------------------------------------------
-if plot_results:
-    plotResults(df_all, config=config, geometry=geometry, targets=targets, ratios=ratios, which=which, use_cmap=use_cmap,
-                color_by=color_by, window=window, plot_individual=plot_individual, save=save_results, outdir=outdir)
-
-
-
-
-
-
 
 
 

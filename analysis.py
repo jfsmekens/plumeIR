@@ -1,11 +1,12 @@
 """
-Written by @jfsmekens - Last updated 01/04/2022
+Written by @jfsmekens - Last updated 28/05/2022
 
 This module contains functions for spectral analysis
 Defines two object classes:
 
     Analyser - an object with functions to perform the spectral analysis
         makeReference           generate OD cross-sections to be used by forward model
+        fowardTransmission      forward model for transmission cases (IR source: lamp, sun, moon, lava)
         forwardEmission         forward model for emission cases (no IR source, cold sky background)
         preProcess              contains all the steps to go from raw single beam spectrum to ready to fit
                                 (trim, offset, calibrate, calculate difference with clear spectrum if necessary)
@@ -17,20 +18,17 @@ Defines two object classes:
 import os
 import logging
 
-import numpy as np
 from scipy.optimize import curve_fit
 from scipy.interpolate import griddata
-from datetime import datetime
 import copy
-from tqdm import tqdm
 from sklearn.metrics import r2_score, mean_squared_error
-import random
+from scipy.ndimage import uniform_filter1d
 
 from atmosphere import *
 from customXSC import *
 from spectra import read_spectrum
 from initialise import readConfig, readStandard
-from constants import plot_colors, pretty_names
+from constants import plot_colors, pretty_names, apod_types
 from parameters import Retrieval
 
 logger = logging.getLogger(__name__)
@@ -38,11 +36,11 @@ continuum_gases = ['H2O']
 # ======================================================================================================================
 #                                               Planck function
 # ======================================================================================================================
-def planck(wave_x, temp):
+def planck(wn, temp, norm=False):
     """
     This function computes the blackbody radiant energy curve using the Planck function for a given temperature
 
-    :param wave_x: X-axis                                   [cm^-1]
+    :param wn: X-axis                                   [cm^-1]
     :param T: Temperature                                   [K]
 
     :return: Blackbody emission curve                       [mW / (m2 sr cm-1)]
@@ -52,18 +50,21 @@ def planck(wave_x, temp):
     c2 = 1.4387752  # K cm
 
     # Create theoretical BB radiance functions
-    planck = c1 * wave_x ** 3 / (np.exp(c2 * wave_x / temp) - 1)
+    rad = c1 * wn ** 3 / (np.exp(c2 * wn / temp) - 1)
 
-    return planck
+    if norm:
+        return rad / rad.max()
+    else:
+        return rad
 
 # ======================================================================================================================
 #                                    Inverse Planck function
 # ======================================================================================================================
-def inversePlanck(wave_x, rad):
+def inversePlanck(wn, rad):
     """
-    This function computes the blackbody radiant energy curve using the Planck function for a given temperature
+    This function computes the blackbody equivalent brightness temperature using the Planck function for a given temperature
 
-    :param wave_x: X-axis                                   [cm^-1]
+    :param wn: X-axis                                   [cm^-1]
     :param rad: Radiance                                    [mW / (m2 sr cm-1)]
 
     :return: Blackbody emission curve                       [K]
@@ -73,127 +74,113 @@ def inversePlanck(wave_x, rad):
     c2 = 1.4387752  # K cm
 
     # Create theoretical BB radiance functions
-    planck = c2 * wave_x / np.log(c1 * wave_x ** 3 / rad + 1)
+    bbt = c2 * wn / np.log(c1 * wn ** 3 / rad + 1)
 
-    return planck
+    return bbt
 
 # ======================================================================================================================
 #                                    Instrument Line Shape function
 # ======================================================================================================================
-def ils(fov=0.030, ftir_opd=1.0, n_per_wave=25, start_wave=1000, apod_flag=1):
-    """
-    This function calculates the Instrument Line Shape (ILS) and computes a kernel to convolve high resolution spectra and
-    degrade them to instrument resolution
 
-    SYNTAX: out = ils(fov = 0.004, ftir_opd = 1.0, n_per_wave = 25, start_wave = 2000, apod_flag = 1)
-
-    :param fov: Field of View of the instrument
-                    Default is 0.004 (Bruker EM27)
-    :param ftir_opd: Optical Path Difference of the FTIR instrument                                         [cm]
-                    Default is 1.0 (Bruker EM27)
-    :param n_per_wave: Resolution of the spectrum to be smoothed                                            [per cm-1]
-                    Default is 25
-    :param start_wave: Starting wavelength for the spectrum                                                 [cm-1]
-                    Default is 600
-    :param apod_flag: Which apodization function to use
-                    # 0 = boxcar
-                    # 1 = triangular
-                    # 2 = NB weak
-                    # 3 = NB medium
-                    # 4 = NB strong
-                    Default is 1
-
-    :return: dictionary with the following structure:
-                                                                             Units
-        ['grid']       The wavenumber grid for the kernel                   [cm^-1]
-        ['kernel']      The kernel itself
-        ['FOV-width']   The width of the Field of View                      [cm]
-        ['shift]        The predicted shift                                 [cm]
-
-    """
-
-    # --------------- DEFINE STARTING PARAMETERS  ---------------------
-    # Define the total OPD as [in cm] the sampling frequency
-    total_opd = n_per_wave
-
-    # Set the number of points in the interferograms (IGM)
-    n_total_igm = int(total_opd * n_per_wave)         # Total IGM
-    n_ftir_igm = int(ftir_opd * n_per_wave)           # FTIR IGM
-    n_filler_igm = int(n_total_igm - n_ftir_igm)     # Filler (difference between the two)
-
-    # Create the IGM grids (in cm)
-    total_igm_grid = np.linspace(0, total_opd, n_ftir_igm)
-    ftir_igm_grid = np.linspace(0, ftir_opd, n_ftir_igm)
-
-    # Create empty IGM arrays
-    ftir_igm = np.zeros(n_ftir_igm)
-    filler_igm = np.zeros(n_filler_igm)
-
-    # ---------------------- GENERATE THE IGMS ------------------------
-    # Flag = 1: Triangular
-    if apod_flag == 1:
-        ftir_igm = (np.arange(n_ftir_igm, dtype=float) / (n_ftir_igm-1))[::-1]
-
-    else:
-        # Flag = 0: Boxcar
-        if apod_flag == 0:
-            c =[1, 0, 0, 0]
-        # Flag = 2: NB weak
-        if apod_flag == 2:
-            c =[0.348093, -0.087577, 0.703484, 0.0]
-        # Flag = 3: NB medium
-        if apod_flag == 3:
-            c =[0.152442, -0.136176, 0.983734, 0]
-        # Flag = 4: NB strong
-        if apod_flag == 4:
-            c =[0.045335, 0.0, 0.554883, 0.399782]
-        # Now build
-        for i in range(4):
-            ftir_igm = ftir_igm + c[i] * ((1 - (ftir_igm_grid / ftir_opd) ** 2)) ** i
-
-    # Fill the rest of the signal with zeros
-    igm = np.concatenate((ftir_igm, filler_igm))
-
-    # ---------------------- RECONSTRUCT KERNEL ------------------------
-    # Apply Fourier Transform to reconstruct spectrum
-    spc = np.fft.fft(igm).real
-
-    # Split the spectrum in the middle and mirror around axis
-    middle = n_total_igm // 2           # Find middle point
-    spc_right = spc[0:middle]         # Beginning of the signal is the tapering edge (right side of the kernel)
-    spc_left = spc[middle:]             # End of the signal is the rising edge (left side of the kernel)
-    spc = np.concatenate((spc_left, spc_right))  # Reconstruct spectrum around the middle point
-
-    # Remove offset in spectrum
-    offset = spc[0:middle//2].mean(axis=0)
-    spc = spc - offset
-
-    # FOV effect is like a boxcar in freq space
-    fov_width = start_wave * (1 - np.cos(fov/2))      # in [cm^-1]
-    shift = start_wave * (1 - np.cos(fov/2)) * 0.5    # in [cm^-1]
-    n_box = int(np.ceil(fov_width * n_per_wave))
-    if n_box < 0 or n_box > middle:
-        n_box = 5
-    boxcar = np.ones(n_box) * 1 / n_box
-    spc_fov = np.convolve(spc, boxcar, 'same')
-    spc_fov = spc_fov / spc_fov.sum()
-
-    # Create the wavenumber grid centred on zero
-    wave = np.linspace(-total_opd / 2, total_opd / 2, n_total_igm)
-
-    # select the middle +/- 5 wavenumbers (minimum window size is then 10 cm^-1)
-    start = int(middle - 5 * n_per_wave)
-    stop = int(middle + 5 * n_per_wave)
-    kernel = spc_fov[start:stop]
-    kernel = kernel / kernel.sum(axis=0)
-    grid = wave[start:stop]
+def makeILS(fov=0.03, max_opd=1.8, nper_wn=25, wn=1000, apod_type='NB medium'):
 
     # Populate kernel array
     out = {}
-    out['grid'] = grid
-    out['kernel'] = kernel
+    out['apod_type'] = apod_type
+    out['fov'] = fov
+    out['wn'] = wn
+
+    # Relabel variables
+    L = max_opd
+    total_opd = nper_wn    # Total length of 1-sided interferometer is the resolution
+    apod_types = ['Boxcar', 'Uniform', 'Triangular', 'Blackman-Harris', 'Happ-Genzel', 'Hamming', 'Lorenz', 'Gaussian',
+                  'NB weak', 'NB medium', 'NB strong', 'Cosine']
+    apod_type = apod_type.lower()
+
+    # ----- Build grid based on max OPD -----
+    n = int(L * nper_wn)
+    if n % 2 == 0:
+        n = n + 1
+    L_grid = np.linspace(0, L, n)
+    n_tot = int(total_opd * nper_wn)
+    filler = np.zeros(n_tot - n)
+
+    # ----- Build apodization functions -----
+    # Boxcar function (no apodization, sampling function should be perfect sinc)
+    if 'boxcar' in apod_type or 'uniform' in apod_type:
+        apod = np.ones(n)
+    # Triangular function
+    elif 'triang' in apod_type:
+        apod = 1 - np.abs(L_grid) / L
+    # Norton-Beer functions (NB)
+    elif 'nb' in apod_type or 'norton' in apod_type or 'beer' in apod_type:
+        # 'NB weak'
+        if 'weak' in apod_type:
+            c = [0.348093, -0.087577, 0.703484, 0.0]
+        # NB strong
+        elif 'strong' in apod_type:
+            c = [0.045335, 0.0, 0.554883, 0.399782]
+        # NB medium (default if nothing is specified)
+        else:
+            c = [0.152442, -0.136176, 0.983734, 0]
+        # # Now build
+        apod = np.zeros(n)
+        for i in range(4):
+            apod = apod + c[i] * (1 - (L_grid / L) ** 2) ** i
+
+    # Hamming function (also known as Happ-Genzel function)
+    elif 'hamming' in apod_type or 'happ' in apod_type or 'genzel' in apod_type:
+        apod = 0.54 + 0.46 * np.cos(np.pi * L_grid / L)
+    # Blackman-Harris function
+    elif 'blackman' in apod_type or 'harris' in apod_type:
+        apod = 0.42 + 0.5 * np.cos(np.pi * L_grid / L) + 0.08 * np.cos(2 * np.pi * L_grid / L)
+    # Cosine function
+    elif 'cos' in apod_type:
+        apod = np.cos(np.pi * L_grid / (2 * L))
+    # Lorenz function
+    elif 'lorenz' in apod_type:
+        apod = np.exp(-np.abs(L_grid) / L)
+    elif 'gauss' in apod_type:
+        apod = np.exp(-(2.24 * L_grid / L) ** 2)
+
+    else:
+        ValueError('Invalid keyword for "apod_type". Please choose from (case insensitive) % s' % apod_types)
+
+    # ----- Take Fourier Transform and get sampling kernel -----
+    kernel = np.fft.fft(np.concatenate((apod, filler))) .real    # Add zeros to simulate infinite length and take FT
+    middle = n_tot // 2
+    kernel = np.concatenate((kernel[middle:], kernel[0:middle]))  # Split in the middle and mirror around wn_grid
+    offset = kernel[0:middle // 2].mean(axis=0)
+    kernel = kernel - offset        # Remove offset in spectrum
+
+    # Create the wavenumber grid centred on zero
+    wn_grid = np.linspace(-total_opd / 2, total_opd / 2, n_tot)
+
+    # Build boxcar filter for FOV effect
+    fov_width = wn * (fov/2) ** 2 / 2  # in [cm^-1]
+    n_box = int(np.ceil(fov_width * nper_wn))
+    if n_box < 0 or n_box > middle:
+        n_box = 5
+    boxcar = np.ones(n_box) * 1 / n_box
+    kernel = np.convolve(kernel, boxcar, 'same')
+
+    # Apply shift due to FOV effect
+    shift = fov_width / 2
+    shift_wn_grid = wn_grid - shift
+    kernel = np.interp(wn_grid, shift_wn_grid, kernel)
+    kernel = kernel / kernel.sum(axis=0)
+
+    # Only keep the first 5 limbs
+    idx = np.abs(wn_grid) <= 5 / L
+    wn_grid = wn_grid[idx]
+    kernel = kernel[idx]
+
+    # Populate kernel array
+    out['wn_grid'] = wn_grid[0:-1]
+    out['kernel'] = kernel[1:]
+    out['L_grid'] = L_grid
+    out['apod'] = apod
     out['fov_width'] = fov_width
-    out['shift'] = shift
 
     return out
 
@@ -209,12 +196,13 @@ class Analyser(object):
 # ======================================================================================================================
 #                                               Initialise Object
 # ======================================================================================================================
-    def __init__(self, params, geometry, fit_window, retrieval=None, model_padding=50, model_spacing=0.04,
+    def __init__(self, params, geometry, fit_window, retrieval=None, model_padding=50, model_spacing=0.04, master=False,
                  name='FIT', data_dir=None, subtract_self=False, fit_size_aero=False, force_ref=False):
         """Initialise the model for the Analyser"""
 
         # Fit name
         self.name = name
+        self.master = master
 
         # ---------------------------------------------------------------------
         # Define fit parameters
@@ -232,24 +220,71 @@ class Analyser(object):
         self.p0 = self.params.fittedValuesList()
         self.bounds = self.params.bounds()
 
-        # Generate model wavenumber grid
-        self.model_padding = model_padding
-        self.model_spacing = model_spacing
-        self.n_per_wave = 1 / self.model_spacing
-        self.fit_window = fit_window
-        self.start_wave = self.fit_window[0] - self.model_padding
-        self.end_wave = self.fit_window[1] + self.model_padding
-        self.model_grid = np.arange(self.start_wave, self.end_wave + self.model_spacing, step=self.model_spacing)
-
         # If retrieval is supplied use this to extract parameters
         if retrieval is None:
             self.retrieval = Retrieval(type=self.type)
+        else:
+            self.retrieval = retrieval
+
+        # Are we imposing SCDs from an existing fit?
+        if self.retrieval.force_param is not None:
+            if isinstance(self.retrieval.force_param, str):
+                self.force_param = [self.retrieval.force_param]
+            else:
+                self.force_param = self.retrieval.force_param
+            for p in self.force_param:
+                if p in self.params:
+                    self.params[p].vary = False
+            logger.info('Values for %s imposed from fit: %s' % (self.force_param, self.retrieval.df_dir))
+        else:
+            self.force_param = []
+
+        # Are we using SCDs from an existing fit as initial parameters?
+        if self.retrieval.seed_param is not None:
+            if isinstance(self.retrieval.seed_param, str):
+                self.seed_param = [self.retrieval.seed_param]
+            else:
+                self.seed_param = self.retrieval.seed_param
+            for p in self.seed_param:
+                if p in self.params:
+                    self.params[p].vary = True
+            logger.info('Using values fot %s as apriori guesses from fit: %s' % (self.seed_param, self.retrieval.df_dir))
+        else:
+            self.seed_param = []
+
+        # Find the dataframe with the previous fit results and check that it can be used
+        self.from_df = self.force_param + self.seed_param
+        if len(self.from_df) > 0:
+            flist = glob(self.retrieval.df_dir + '/*fitResults*_ALL.csv')
+            if len(flist) == 0:
+                raise ValueError('Could not find a suitable fitResult file in directory %s'
+                                 % self.retrieval.df_dir)
+            elif len(flist) == 1:
+                df = pd.read_csv(flist[0])
+                if all(['%s_scd [molec.cm^-2]' % x in df.columns or x in df.columns for x in self.from_df]):
+                    self.df_dir = df
+                else:
+                    raise IOError('Supplied fitResult does not contain all parameters')
+            else:
+                raise ValueError('Found multiple (%i) matches for fitResult file in directory %s'
+                                 % (len(flist), self.retrieval.df_dir))
+
+        # Generate model wavenumber grid
+        self.model_padding = model_padding
+        self.model_spacing = model_spacing
+        self.nper_wn = 1 / self.model_spacing
+        self.fit_window = fit_window
+        self.wn_start = self.fit_window[0] - self.model_padding
+        self.wn_stop = self.fit_window[1] + self.model_padding
+        self.model_grid = np.arange(self.wn_start, self.wn_stop + self.model_spacing, step=self.model_spacing)
+
+        # Get ILS parameters
+        self.max_opd = retrieval.max_opd
+        self.apod_type = retrieval.apod_type
 
         # Update info about aerosols
         self.use_Babs_aero = retrieval.use_Babs_aero
         self.fit_size_aero = retrieval.fit_size_aero
-
-        # Extract spectrum wavelength grid as well?
 
         # ---------------------------------------------------------------------
         # Generate calibration and clear sky for emission
@@ -257,6 +292,10 @@ class Analyser(object):
         if self.type == 'layer':
             self.subtract_self = retrieval.subtract_self
             self.no_gas = retrieval.no_gas
+            self.use_source_E = retrieval.use_source_E
+            self.E_file = retrieval.E_file
+            self.use_residual = retrieval.use_residual
+            self.res_dir = retrieval.res_dir
         elif self.type == 'emission':
             self.fit_difference = retrieval.fit_difference
             self.bb_drift = retrieval.bb_drift
@@ -273,6 +312,29 @@ class Analyser(object):
         # ---------------------------------------------------------------------
         if self.subtract_self:
             self.makeSelfEmission()
+
+        # ---------------------------------------------------------------------
+        # Extract "no gas" spectrum
+        # ---------------------------------------------------------------------
+        if self.no_gas:
+            self.makeNoGas()
+
+        # ---------------------------------------------------------------------
+        # Make Emissivity spectrum
+        # ---------------------------------------------------------------------
+        if self.use_source_E:
+            self.makeSourceEmissivity()
+        else:
+            logger.info('Source assumed to be black/gray body with uniform emissivity')
+            self.E_model = 1
+
+        # ---------------------------------------------------------------------
+        # Generate average residual from previous fit
+        # ---------------------------------------------------------------------
+        if self.use_residual:
+            self.makeResidual()
+        else:
+            self.res_model = 1
 
         # ---------------------------------------------------------------------
         # Generate reference cross sections
@@ -305,19 +367,479 @@ class Analyser(object):
         # Read in Standard quantities for cross-sections
         std = readStandard()
         scalings = np.linspace(0, 4, 21)    # 0-4 scalings for continuum gases
+        temps = np.linspace(200, 800, 21)   # Range of temperatures for the gas
 
         # Create empty structure to store reference
         ref = {}
-        ref['wave'] = self.model_grid
+        ref['wn'] = self.model_grid
 
         logger.info('########## Reference cross-sections for %s - type %s ##########'
                     % (self.name.upper(), self.type.upper()))
 
-       
+        # ---------------------------------------------------------------------
+        # 1: Homogeneous layer geometry
+        # ---------------------------------------------------------------------
+        if self.type == 'layer':
+
+            # Generate header for looking up references
+            header = "Pathlength: %.3f\n" \
+                     "Plume thickness: %.3f\n" \
+                     "Atmospheric temperature: %i K\n" \
+                     "Atmospheric pressure: %i mbar\n" \
+                     "Plume temperature: %i K\n" \
+                     "Gas Temp dependence: %s\n" \
+                     "Plume pressure: %i mbar\n" \
+                     "Fit window: %i - %i cm^-1\n" \
+                     "Spectral resolution: %.3f cm^-1\n" \
+                     "Atmospheric gases: %s\n" \
+                     "Plume gases: %s\n" \
+                     "Plume aerosols: %s\n" \
+                     % (self.geometry.pathlength,
+                        self.geometry.plume_thickness,
+                        self.geometry.atm_temp,
+                        self.geometry.atm_pres,
+                        self.geometry.plume_temp,
+                        self.retrieval.fit_gas_temp,
+                        self.geometry.plume_pres,
+                        self.wn_start, self.wn_stop,
+                        self.model_spacing,
+                        self.params.atmGasList(),
+                        self.params.plumeGasList(),
+                        self.params.plumeAeroList())
+
+            # Compare headers to see if any of the saved references are a match
+            old_refs = glob(self.data_dir + '/layerReference*.pkl')
+            match = False
+            matches = []
+            if len(old_refs) == 0:
+                match = False
+            else:
+                for path in old_refs:
+                    with open(path, 'rb') as f:
+                        old = pickle.load(f)
+                    if 'header' in old.keys():
+                        if old['header'] == header:
+                            matches.append(True)
+                        else:
+                            matches.append(False)
+                    else:
+                        matches.append(False)
+
+            # Load the most recent matching reference
+            if any(matches):
+                match = True
+                match_idx = [i for i, val in enumerate(matches) if val]
+                logger.info('Found %i matching references' % len(match_idx))
+                if len(match_idx) == 1:
+                    logger.info('Loading: %s' % old_refs[match_idx[0]])
+                    with open(old_refs[match_idx[0]], 'rb') as f:
+                        ref = pickle.load(f)
+                else:
+                    logger.info('Loading most recent: %s' % old_refs[match_idx[-1]])
+                    with open(old_refs[match_idx[-1]], 'rb') as f:
+                        ref = pickle.load(f)
+
+            # If no match is found, proceed with creating one
+            if not match or force:
+
+                # Create empty structures
+                ref['atm'] = {}
+                ref['plume'] = {}
+                ref['atm']['ref_column'] = {}
+                ref['plume']['ref_column'] = {}
+
+                # ----- 1: Atmospheric gases -----
+                logger.info('Atmospheric gases %s at %i K...' % (self.params.atmGasList(), self.geometry.atm_temp))
+                ref['atm']['OD_calib'] = {}
+
+                # Get the list of gases and create a progress bar
+                atm_gases = self.params.atmGasList()
+                n_gas = len(atm_gases)
+                n_continuum = len([gas for gas in atm_gases if gas in continuum_gases])
+                pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)  # Progress bar
+
+                # Loop over gases
+                for i, gas in enumerate(atm_gases):
+
+                    pbar.set_description('%s' % gas)    # Update pbar description
+
+                    # Assign reference column amount and find concentration based on pathlength
+                    ref_conc = std[gas]['conc']
+                    ref['atm']['ref_column'][gas] = ppm2scd(ref_conc, self.geometry.pathlength,
+                                                            temp=self.geometry.atm_temp, pres=self.geometry.atm_pres)
+
+                    # If gas is a continuum gas, use scalings to create a calibration polynomial
+                    if gas in continuum_gases:
+                        ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
+                        for j, sc in enumerate(scalings):
+                            pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
+                            # Generate OD cross-section
+                            ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc * sc,
+                                                   species=gas)['Bext'] * self.geometry.pathlength * 1e3
+                            if sc == 1.0:
+                                ref['atm'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
+                                                             species=gas)['Bext'] * self.geometry.pathlength * 1e3
+                            pbar.update()
+                        ref['atm']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
+
+                    # Otherwise just make one cross-section with a reference quantity
+                    else:
+                        ref['atm'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
+                                                     species=gas)['Bext'] * self.geometry.pathlength * 1e3
+                        pbar.update()
+                    pbar.set_description('Done!')
+                pbar.close()
+                logger.info('...Done!')
+
+                # ----- 2: Plume gases -----
+                if self.retrieval.fit_gas_temp:
+                    logger.info('Plume gases %s in range %i - %i K...' % (self.params.plumeGasList(), temps.min(), temps.max()))
+                else:
+                    logger.info('Plume gases %s at %i K...' % (self.params.plumeGasList(), self.geometry.plume_temp))
+                ref['plume']['OD_calib'] = {}
+
+                # Get the list of gases and create a progress bar
+                plume_gases = self.params.plumeGasList()
+                n_gas = len(plume_gases)
+                n_continuum = len([gas for gas in plume_gases if gas in continuum_gases])
+                if self.retrieval.fit_gas_temp:
+                    pbar = tqdm(total=n_continuum * len(scalings) + (n_gas - n_continuum) * len(temps))  # Progress bar
+                else:
+                    pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)
+
+                # Loop over gases
+                for i, gas in enumerate(plume_gases):
+
+                    # If gas is both atm and plume, remove suffix
+                    pbar.set_description('%s' % gas)
+
+                    # Assign reference concentration and reference SCD based on plume_thickness
+                    ref_conc = std[gas]['conc']
+                    ref_column = ppm2scd(ref_conc, self.geometry.plume_thickness,
+                                                              temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)
+                    ref['plume']['ref_column'][gas] = ref_column
+
+                    # If gas is a continuum gas, use scalings to create a calibration polynomial
+                    if gas in continuum_gases:
+                        ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
+                        for j, sc in enumerate(scalings):
+                            pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
+                            # Generate OD cross-section
+                            ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc * sc,
+                                                           species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+                            if sc == 1.0:
+                                ref['plume'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
+                                                             species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+                            pbar.update()
+
+                        ref['plume']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
+
+                    elif self.retrieval.fit_gas_temp:
+
+                        ODs = np.empty([len(self.model_grid), len(temps)], dtype=float)
+                        for j, t in enumerate(temps):
+                            pbar.set_description('%s @ %i K' % (gas, t))  # Change pbar message
+                            conc = scd2ppm(ref_column, self.geometry.plume_thickness, temp=t, pres=self.geometry.plume_pres)
+                            # Generate OD cross-section
+                            ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=conc,
+                                                   species=gas, temp=t, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+                            pbar.update()
+
+                        ref['plume']['OD_calib'][gas] = np.polyfit(temps, ODs.T, 10)
+                        ref['plume'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
+                                                       species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+
+                    # Otherwise just make one cross-section with a reference quantity
+                    else:
+                        ref['plume'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
+                                                           species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+                        pbar.update()
+                    pbar.set_description('Done!')
+                pbar.close()
+                logger.info('...Done!')
+
+                # --- 3: Plume aerosols ---
+                logger.info('Plume particulates %s ...' % self.params.plumeAeroList())
+
+                # Loop over particulates
+                for aero in self.params.plumeAeroList():
+
+                    # Assign reference column amount
+                    ref['plume']['ref_column'][aero] = std[aero]['conc'] * self.geometry.plume_thickness * 1e3
+                    ref['plume'][aero] = {}
+                    comp = std[aero]['comp']
+
+                    # Get size parameters from standard file
+                    size_log = np.linspace(np.log10(std[aero]['vmin']), np.log10(std[aero]['vmax']), 11)
+                    sigma = std[aero]['sigma']
+                    mass_conc = std[aero]['conc']
+
+                    # Create empty arrays
+                    Bext = np.empty([11, len(self.model_grid)], dtype=float)
+                    Babs = np.empty([11, len(self.model_grid)], dtype=float)
+
+                    for i, size in enumerate(size_log):
+                        # When using a PSD
+                        if sigma is None:
+                            xsec = makeAerosolXSC(self.wn_start, self.wn_stop, self.nper_wn, 10 ** size,
+                                               mass_conc, species=aero, comp=comp)
+                        # When using a single size
+                        else:
+                            xsec = makeAerosolXSC(self.wn_start, self.wn_stop, self.nper_wn, 10 ** size,
+                                               mass_conc, psd=True, sigma=sigma, species=aero, comp=comp)
+                        # Store Bext and Babs in arrays
+                        Bext[i, :] = xsec['Bext'] * self.geometry.plume_thickness * 1e3
+                        Babs[i, :] = xsec['Babs'] * self.geometry.plume_thickness * 1e3
+
+                    # Create polynomial calibration
+                    ref['plume'][aero]['Bext'] = np.polyfit(size_log, Bext, 10)
+                    ref['plume'][aero]['Babs'] = np.polyfit(size_log, Babs, 10)
+
+                logger.info('...Done!')
+
+                # Save a copy to avoid lengthy reruns
+                ref['header'] = header
+                outname = self.data_dir + 'layerReference_%s.pkl' % datetime.strftime(datetime.now(), '%Y%m%dT%H%M%S')
+                with open(outname, 'wb') as f:
+                    pickle.dump(ref, f)
+                logger.info('Reference saved in local data directory: %s' % outname)
+
+        # ---------------------------------------------------------------------
+        # 2: Solar occultation geometry
+        # ---------------------------------------------------------------------
+        elif self.type == 'solar' or self.type == 'lunar':
+
+            # Look for solar spectrum (coming soon!)
+
+            # Create empty structures
+            ref['atm'] = {}
+            ref['plume'] = {}
+            ref['atm']['ref_column'] = {}
+            ref['plume']['ref_column'] = {}
+
+            # Copy atm profile to analyser level
+            self.atm = self.geometry.atm
+
+            # Generate header for looking up references
+            header = "Standard atmosphere: %s\n" \
+                     "Sounding: %s\n" \
+                     "Observer Height: %.3f km\n" \
+                     "Plume Height: %.3f km\n" \
+                     "Plume Thickness: %.3f km\n" \
+                     "Viewing Angle: %.1f deg\n" \
+                     "Fit window: %i - %i cm^-1\n" \
+                     "Spectral resolution: %.3f cm^-1\n" \
+                     "Atmospheric gases: %s\n" \
+                     "Plume gases: %s\n" \
+                     "Plume aerosols: %s\n" \
+                     % (self.geometry.atm_path,
+                        self.geometry.sounding,
+                        self.geometry.obs_height,
+                        self.geometry.plume_height,
+                        self.geometry.plume_thickness,
+                        self.geometry.elev,
+                        self.wn_start, self.wn_stop,
+                        self.model_spacing,
+                        self.params.atmGasList(),
+                        self.params.plumeGasList(),
+                        self.params.plumeAeroList())
+
+            # Compare headers to see if any of the saved references are a match
+            old_refs = glob(self.data_dir + '/solarReference*.pkl')
+            match = False
+            matches = []
+            if len(old_refs) == 0:
+                match = False
+            else:
+                for path in old_refs:
+                    with open(path, 'rb') as f:
+                        old = pickle.load(f)
+                    if 'header' in old.keys():
+                        if old['header'] == header:
+                            matches.append(True)
+                        else:
+                            matches.append(False)
+                    else:
+                        matches.append(False)
+
+            # Load most recent matching reference
+            if any(matches):
+                match = True
+                match_idx = [i for i, val in enumerate(matches) if val]
+                logger.info('Found %i matching references' % len(match_idx))
+                if len(match_idx) == 1:
+                    logger.info('Loading: %s' % old_refs[match_idx[0]])
+                    with open(old_refs[match_idx[0]], 'rb') as f:
+                        ref = pickle.load(f)
+                else:
+                    logger.info('Loading most recent: %s' % old_refs[match_idx[-1]])
+                    with open(old_refs[match_idx[-1]], 'rb') as f:
+                        ref = pickle.load(f)
+
+            # If no match is found, proceed with creating a new one
+            if not match or force:
+
+                # --- 1: Atmospheric gases ---
+                logger.info('Background atmosphere: from observer height (%.2f km) to edge of atmosphere ...'
+                            % self.geometry.obs_height)
+                atm_dist, dist = sliceAtm(self.geometry.atm_path, self.geometry.obs_height,
+                                          self.atm['HGT'].max(), outpath=True)
+
+                ref['atm']['OD_calib'] = {}
+
+                # Look up list of gases and create a progress bar
+                atm_gases = self.params.atmGasList()
+                n_gas = len(atm_gases)
+                n_continuum = len([gas for gas in atm_gases if gas in continuum_gases])
+                pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)  # Progress bar
+
+                # Loop over gases
+                for gas in atm_gases:
+
+                    # Assign total column as reference
+                    pbar.set_description('%s' % gas)
+                    ref['atm']['ref_column'][gas] = ppm2scd(atm_dist[gas], atm_dist['HGT'] * 1e3,
+                                                            temp=atm_dist['TEM'],
+                                                            pres=atm_dist['PRE'])
+
+                    # If gas is a continuum gas
+                    if gas in continuum_gases:
+
+                        ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
+                        for j, sc in enumerate(scalings):
+                            pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
+
+                            # Scale atmosphere for that gas
+                            atm_scaled, scaled = scaleAtm(dist, sc, which=gas, outpath=True)
+
+                            # Write RFM driver and run
+                            writeRFMdrv(self.wn_start, self.wn_stop, self.nper_wn, layer=False, atm=scaled,
+                                        height=self.geometry.obs_height, elev=self.geometry.elev, gas=gas)
+                            run('./RFM/source/rfm', stdout=DEVNULL)
+
+                            # Generate OD cross-section
+                            ODs[:, j] = readRFM('./RFM/output/opt%05d.out' % (self.geometry.elev * 1e3))['data']
+                            if sc == 1.0:
+                                ref['atm'][gas] = readRFM('./RFM/output/opt%05d.out' % (self.geometry.elev * 1e3))['data']
+                            pbar.update()
+
+                        ref['atm']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
+
+                    # Otherwise just create a cross-section based onn a reference quantity
+                    else:
+
+                        # Write RFM driver and run
+                        writeRFMdrv(self.wn_start, self.wn_stop, self.nper_wn, layer=False, atm=dist,
+                                    height=self.geometry.obs_height, elev=self.geometry.elev, gas=gas)
+                        run('./RFM/source/rfm', stdout=DEVNULL)
+
+                        # Read Optical Depth
+                        ref['atm'][gas] = readRFM('./RFM/output/opt%05d.out' % (self.geometry.elev * 1e3))['data']
+                        pbar.update()
+                    pbar.set_description('Done!')
+                pbar.close()
+                logger.info('...Done!')
+
+                # ----- 2: Plume gases -----
+                logger.info('Plume gases %s at %i K...' % (self.params.plumeGasList(), self.geometry.plume_temp))
+                ref['plume']['OD_calib'] = {}
+
+                # Create list of gases and generate progress bar
+                plume_gases = self.params.plumeGasList()
+                n_gas = len(plume_gases)
+                n_continuum = len([gas for gas in plume_gases if gas in continuum_gases])
+                pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)  # Progress bar
+
+                # Loop over gases
+                for i, gas in enumerate(plume_gases):
+
+                    # If gas is both atm and plume, remove suffix
+                    pbar.set_description('%s' % gas)
+
+                    # Assign reference concentration and reference SCD based on pathlength
+                    ref_conc = std[gas]['conc']
+                    ref['plume']['ref_column'][gas] = ppm2scd(ref_conc, self.geometry.pathlength,
+                                                              temp=self.geometry.plume_temp,
+                                                              pres=self.geometry.plume_pres)
+
+                    # If gas is a continuum gas, use scalings to create a calibration polynomial
+                    if gas in continuum_gases:
+
+                        ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
+                        for j, sc in enumerate(scalings):
+                            pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
+                            # Generate OD cross-section
+                            ODs[:, j] = \
+                                makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc * sc,
+                                           species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.pathlength * 1e3
+                            if sc == 1.0:
+                                ref['atm'][gas] = \
+                                    makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
+                                               species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.pathlength * 1e3
+                            pbar.update()
+
+                        ref['plume']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
+
+                    # Otherwise create a cross-section for a reference quantity
+                    else:
+                        pbar.set_description('%s' % gas)
+                        ref['plume'][gas] = \
+                            makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
+                                       species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.pathlength * 1e3
+                        pbar.update()
+                    pbar.set_description('Done!')
+                pbar.close()
+                logger.info('...Done!')
+
+                # --- 3: Plume aerosols ---
+                logger.info('Plume aerosols %s ...' % self.params.plumeAeroList())
+                for aero in self.params.plumeAeroList():
+
+                    # Assign reference column amount
+                    ref['plume'][aero] = {}
+                    comp = std[aero]['comp']
+                    ref['plume']['ref_column'][aero] = std[aero]['conc'] * self.geometry.pathlength * 1e3
+
+                    # Get size parameters from standard file
+                    size_log = np.linspace(np.log10(std[aero]['vmin']), np.log10(std[aero]['vmax']), 11)
+                    sigma = std[aero]['sigma']
+                    mass_conc = std[aero]['conc']
+
+                    # Create empty arrays
+                    Bext = np.empty([11, len(self.model_grid)], dtype=float)
+                    Babs = np.empty([11, len(self.model_grid)], dtype=float)
+
+                    for i, size in enumerate(size_log):
+                        # When size is a PSD
+                        if sigma is None:
+                            xsec = makeAerosolXSC(self.wn_start, self.wn_stop, self.nper_wn, 10 ** size,
+                                               mass_conc, species=aero, comp=comp)
+
+                        # When size is a single size
+                        else:
+                            xsec = makeAerosolXSC(self.wn_start, self.wn_stop, self.nper_wn, 10 ** size,
+                                               mass_conc, psd=True, sigma=sigma, species=aero, comp=comp)
+
+                        # Store Bext and Babs in arrays
+                        Bext[i, :] = xsec['Bext'] * self.geometry.pathlength * 1e3
+                        Babs[i, :] = xsec['Babs'] * self.geometry.pathlength * 1e3
+
+                    # Make calibration polynomials
+                    ref['plume'][aero]['Bext'] = np.polyfit(size_log, Bext, 10)
+                    ref['plume'][aero]['Babs'] = np.polyfit(size_log, Babs, 10)
+
+                logger.info('...Done!')
+
+                # Save a copy to avoid lengthy reruns
+                ref['header'] = header
+                outname = self.data_dir + 'solarReference_%s.pkl' % datetime.strftime(datetime.now(), '%Y%m%dT%H%M%S')
+                with open(outname, 'wb') as f:
+                    pickle.dump(ref, f)
+
         # ---------------------------------------------------------------------
         # 3: Emission geometry
         # ---------------------------------------------------------------------
-        if self.type == 'emission':
+        elif self.type == 'emission':
 
             # Copy atm profile to Analyser level
             self.atm = self.geometry.atm
@@ -342,14 +864,14 @@ class Analyser(object):
                         self.geometry.plume_height,
                         self.geometry.plume_thickness,
                         self.geometry.elev,
-                        self.start_wave, self.end_wave,
+                        self.wn_start, self.wn_stop,
                         self.model_spacing,
                         self.params.atmGasList(),
                         self.params.plumeGasList(),
                         self.params.plumeAeroList())
 
             # Compare headers to see if any of the saved references are a match
-            old_refs = glob.glob(self.data_dir + '/emissionReference*.pkl')
+            old_refs = glob(self.data_dir + '/emissionReference*.pkl')
             old_refs.sort()
             match = False
             matches = []
@@ -416,7 +938,7 @@ class Analyser(object):
                     pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
                     # Write RFM driver and run
                     atm_scaled, scaled = scaleAtm(prox, sc, which=gas, outpath=True)
-                    writeRFMdrv(self.start_wave, self.end_wave, self.n_per_wave, layer=False, atm=scaled,
+                    writeRFMdrv(self.wn_start, self.wn_stop, self.nper_wn, layer=False, atm=scaled,
                                 height=self.geometry.obs_height, elev=self.geometry.elev, gas=atm_gases)
                     run('./RFM/source/rfm', stdout=DEVNULL)
                     # Read Optical Depth and Radiance
@@ -452,7 +974,7 @@ class Analyser(object):
                         pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
                         # Write RFM driver and run
                         atm_scaled, scaled = scaleAtm(slice, sc, which=gas, outpath=True)
-                        writeRFMdrv(self.start_wave, self.end_wave, self.n_per_wave, layer=False, atm=scaled,
+                        writeRFMdrv(self.wn_start, self.wn_stop, self.nper_wn, layer=False, atm=scaled,
                                     height=self.geometry.h1, elev=self.geometry.elev, gas=atm_gases)
                         run('./RFM/source/rfm', stdout=DEVNULL)
                         # Read Optical Depth and Radiance
@@ -486,7 +1008,7 @@ class Analyser(object):
                     pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
                     # Write RFM driver and run
                     atm_scaled, scaled = scaleAtm(dist, sc, which=gas, outpath=True)
-                    writeRFMdrv(self.start_wave, self.end_wave, self.n_per_wave, layer=False, atm=scaled,
+                    writeRFMdrv(self.wn_start, self.wn_stop, self.nper_wn, layer=False, atm=scaled,
                                 height=self.geometry.h2, elev=self.geometry.elev, gas=atm_gases)
                     run('./RFM/source/rfm', stdout=DEVNULL)
                     # Read Optical Depth and Radiance
@@ -525,8 +1047,8 @@ class Analyser(object):
                         for j, sc in enumerate(scalings):
                             pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
                             # Generate OD cross-section
-                            ODs[:, j] = makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc * sc,
-                                        species=gas)['Bext'] * self.geometry.pathlength * 1e3 \
+                            ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc * sc,
+                                        species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.pathlength * 1e3 \
 
                             if sc == 1.0:
                                 ref['atm'][gas] = ODs[:, j]
@@ -536,8 +1058,8 @@ class Analyser(object):
 
                     else:
                         pbar.set_description('%s' % gas)
-                        ref['atm'][gas] = makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc,
-                                                     species=gas)['Bext'] * self.geometry.pathlength * 1e3
+                        ref['atm'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
+                                                     species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.pathlength * 1e3
 
                         pbar.update()
                 pbar.set_description('Done!')
@@ -567,8 +1089,8 @@ class Analyser(object):
                             pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
                             # Generate OD cross-section
                             ODs[:, j] = \
-                            makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc * sc,
-                                       species=gas)['Bext'] * self.geometry.pathlength * 1e3
+                            makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc * sc,
+                                       species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.pathlength * 1e3
 
                             if sc == 1.0:
                                 ref['atm'][gas] = ODs[:, j]
@@ -579,8 +1101,8 @@ class Analyser(object):
                     else:
                         pbar.set_description('%s' % gas)
                         ref['plume'][gas] = \
-                        makeGasXSC(self.start_wave, self.end_wave, self.n_per_wave, conc=ref_conc,
-                                   species=gas)['Bext'] * self.geometry.pathlength * 1e3
+                        makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
+                                   species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.pathlength * 1e3
 
                         pbar.update()
                     pbar.set_description('Done!')
@@ -606,12 +1128,12 @@ class Analyser(object):
                     for i, size in enumerate(size_log):
                         # When size is a PSD
                         if sigma is None:
-                            xsec = makeAerosolXSC(self.start_wave, self.end_wave, self.n_per_wave, 10 ** size,
+                            xsec = makeAerosolXSC(self.wn_start, self.wn_stop, self.nper_wn, 10 ** size,
                                                   mass_conc, species=aero, comp=comp)
 
                         # When size is a single size
                         else:
-                            xsec = makeAerosolXSC(self.start_wave, self.end_wave, self.n_per_wave, 10 ** size,
+                            xsec = makeAerosolXSC(self.wn_start, self.wn_stop, self.nper_wn, 10 ** size,
                                                   mass_conc, psd=True, sigma=sigma, species=aero, comp=comp)
 
                         # Store Bext and Babs in arrays
@@ -662,35 +1184,45 @@ class Analyser(object):
 # ======================================================================================================================
 #                                        Plot Reference
 # ======================================================================================================================
-    def plotReference(self, save=False, outdir='./plots/'):
+    def plotReference(self, save=False, outdir='./plots/', title=True, umax=True):
 
         # Assign local variables
         std = readStandard()
         ref = self.reference
-        wave = self.model_grid
+        wn = self.model_grid
         padding = self.model_padding
         n_atm = len(self.params.atmGasList())
         n_plume = len(self.params.plumeGasList()) + len(self.params.plumeAeroList())
         depth = 0.75
-        if wave.max() - wave.min() > 5 * padding:
+        if wn.max() - wn.min() > 5 * padding:
             pad = 2
         else:
             pad = 1
         if self.type == 'emission':
             atmT = 'Transmittance'
-            plumeT = 'Absorbance'
+            plumeT = 'Extinction'
         else:
             atmT = 'Transmittance'
             plumeT = 'Transmittance'
 
-        idx = [i for i, w in enumerate(wave) if wave.min() + pad * padding <= w <= wave.max() - pad * padding]
+        idx = [i for i, w in enumerate(wn) if wn.min() + pad * padding <= w <= wn.max() - pad * padding]
 
         # Open figure
-        fig, ax = plt.subplots(figsize=[10, 6])
-        ax2 = plt.twinx(ax)
+        fig, ax1 = plt.subplots(figsize=[10, 6])
+        ax2 = plt.twinx(ax1)
+        if len(self.params.plumeAeroList()) > 0:
+            ax3 = plt.twinx(ax1)
+            thirdcolor = 'tab:grey'
+            tkw = dict(size=4, width=1.5)
+            ax3.tick_params(axis='y', colors=thirdcolor, **tkw)
+            ax3.spines['right'].set_position(("axes", 1.1))
+            ax3.spines['right'].set_fc(thirdcolor)
+            ax3.spines['right'].set_ec(thirdcolor)
+            ax3.set_ylabel('Test', fontdict={'color': thirdcolor})
 
         # Add title
-        fig.suptitle('%s - %s' % (self.name, self.type.upper()))
+        if title:
+            fig.suptitle('%s - %s' % (self.name, self.type.upper()))
 
         for gas in self.params.atmGasList():
             if gas == 'H2O':
@@ -698,8 +1230,9 @@ class Analyser(object):
             else:
                 sc = - np.log(1 - depth) / ref['atm'][gas][idx].max()
             T = np.exp(-ref['atm'][gas] * sc)
-            ax.plot(wave, T, c=plot_colors[gas], zorder=0, alpha=0.5, label='%s' % pretty_names[gas])
+            ax1.plot(wn, T, c=plot_colors[gas], zorder=0, alpha=0.5, label='%s' % pretty_names[gas])
 
+        lns = []
         for gas in self.params.plumeGasList():
             if gas == 'H2O':
                 sc = 1.0
@@ -707,34 +1240,57 @@ class Analyser(object):
                 sc = - np.log(1 - depth) / ref['plume'][gas][idx].max()
             if self.type == 'emission':
                 A = 1 - np.exp(-ref['plume'][gas] * sc)
-                ax2.plot(wave, A, c=plot_colors[gas], zorder=1, alpha=1.0, label='%s' % pretty_names[gas])
+                l, = ax2.plot(wn, A, c=plot_colors[gas], zorder=1, alpha=1.0, label='%s' % pretty_names[gas])
+                lns.append(l)
             else:
                 T = np.exp(-ref['plume'][gas] * sc)
-                ax2.plot(wave, T, c=plot_colors[gas], zorder=1, alpha=1.0, label='%s' % pretty_names[gas])
+                l, = ax2.plot(wn, T, c=plot_colors[gas], zorder=1, alpha=1.0, label='%s' % pretty_names[gas])
+                lns.append(l)
 
         for aero in self.params.plumeAeroList():
             sc = - np.log(1 - depth) / np.polyval(ref['plume'][aero]['Bext'], 1.0).max()
             if self.type == 'emission':
                 A = 1 - np.exp(-np.polyval(ref['plume'][aero]['Bext'], 1.0) * sc)
-                ax2.plot(wave, A, c=plot_colors[aero], zorder=1, alpha=1.0, label='%s' % pretty_names[gas])
+                l, = ax3.plot(wn, A, c=plot_colors[aero], zorder=1, alpha=1.0, label='%s' % pretty_names[aero])
+                lns.append(l)
             else:
                 T = np.exp(-np.polyval(ref['plume'][aero]['Bext'], 1.0) * sc)
-                ax2.plot(wave, T, c=plot_colors[aero], zorder=1, alpha=1.0, label='%s' % pretty_names[gas])
+                l, = ax2.plot(wn, T, c=plot_colors[aero], zorder=1, alpha=1.0, label='%s' % pretty_names[aero])
+                lns.append(l)
 
-        ax.set(xlabel='Wavenumber [$cm^{-1}$]', ylabel='%s' % atmT, ylim=(0, 1))
-        ax2.set(ylabel='%s' % plumeT, ylim=(0, 1))
+        # Add micron wavelength axis
+        if umax:
+            bbox1 = (0., 1.08, 0.5, .102)
+            bbox2 = (0.5, 1.08, 0.5, .102)
+            def fw(x):
+                return 10000 / x
+            umax = ax1.secondary_xaxis('top', functions=(fw, fw))
+            umax.minorticks_on()
+            umax.set_xlabel('Wavelength [$\mu$m]')
+        else:
+            bbox1 = (0., 1.02, 0.5, .102)
+            bbox2 = (0.5, 1.02, 0.5, .102)
 
-        ax.legend(title='Atmosphere (%s - %.2g km)' % (atmT, self.geometry.pathlength), bbox_to_anchor=(0., 1.02, 0.5, .102),
+        ax1.set(xlabel='Wavenumber [$cm^{-1}$]', ylabel='%s' % atmT, ylim=(0, 1))
+        if len(self.params.plumeAeroList()) > 0:
+            ax2.set(ylabel='Gas %s' % plumeT, ylim=(0, 1))
+            ax3.set(ylabel='Particulate %s' % plumeT)
+        else:
+            ax2.set(ylabel='%s' % plumeT, ylim=(0, 1))
+
+        ax1.legend(title='Atmosphere (%s - %.2g km)' % (atmT, self.geometry.pathlength), bbox_to_anchor=bbox1,
                   loc='lower left', ncol=n_atm // 2 + n_atm % 2)
-        ax2.legend(title='Plume (%s - %.2g km)' % (plumeT, self.geometry.pathlength), bbox_to_anchor=(0.5, 1.02, 0.5, .102),
+
+        labs = [l.get_label() for l in lns]
+        ax2.legend(lns, labs, title='Plume (%s - %.2g km)' % (plumeT, self.geometry.pathlength), bbox_to_anchor=bbox2,
                    loc='lower right', ncol=n_plume // 2 + n_plume % 2)
 
-        # plt.tight_layout(rect=[0, 0, 1, 0.95])
         plt.tight_layout()
         plt.show(block=False)
 
         if save:
-            plt.savefig(outdir + 'reference.png')
+            plt.savefig(outdir + 'reference.png', dpi=600)
+            plt.close()
 
 # ======================================================================================================================
 #                                        Generate calibration
@@ -744,7 +1300,7 @@ class Analyser(object):
         logger.info('Generating calibration from BB files')
 
         # List all files in directory
-        flist = glob.glob(self.data_dir + '*')
+        flist = glob(self.data_dir + '*')
 
         # Only keep the potential spectra files
         flist = [f for f in flist if not os.path.isdir(f)]
@@ -763,9 +1319,9 @@ class Analyser(object):
         bbh = []
         for i, item in enumerate(bbc_list):
             if i == 0:
-                wave = read_spectrum(bbc_list[i]).spectrum[0]
-                idx = [i for i, x in enumerate(wave) if self.fit_window[0] <= x <= self.fit_window[1]]
-                wave = wave[idx]
+                wn = read_spectrum(bbc_list[i]).spectrum[0]
+                idx = [i for i, x in enumerate(wn) if self.fit_window[0] <= x <= self.fit_window[1]]
+                wn = wn[idx]
                 TC = read_spectrum(bbc_list[i]).target_temp
                 TH = read_spectrum(bbh_list[i]).target_temp
             bbc.append(read_spectrum(bbc_list[i]).spectrum[1][idx])
@@ -789,16 +1345,16 @@ class Analyser(object):
 
             # times = np.linspace(times[0], times[-1], n_steps+1)
             deg = min([n-1, 2])
-            irf = np.empty([n, len(wave)], dtype=float)
-            ri = np.empty([n, len(wave)], dtype=float)
+            irf = np.empty([n, len(wn)], dtype=float)
+            ri = np.empty([n, len(wn)], dtype=float)
             for i in range(n):
                 # Read in sbm spectra
                 BBC_sb = bbc[i]
                 BBH_sb = bbh[i]
 
                 # Create theoretical BB radiance functions
-                planck_C = planck(wave, TC)
-                planck_H = planck(wave, TH)
+                planck_C = planck(wn, TC)
+                planck_H = planck(wn, TH)
 
                 # Make sure we don't divide by zero anywhere
                 quotient = BBH_sb - BBC_sb
@@ -818,8 +1374,8 @@ class Analyser(object):
             BBH_sb = bbh[-1]
 
             # Create theoretical BB radiance functions
-            planck_C = planck(wave, TC)
-            planck_H = planck(wave, TH)
+            planck_C = planck(wn, TC)
+            planck_H = planck(wn, TH)
 
             # Make sure we don't divide by zero anywhere
             quotient = BBH_sb - BBC_sb
@@ -844,7 +1400,7 @@ class Analyser(object):
         logger.info('Generating clear sky')
 
         # List all files in directory
-        flist = glob.glob(self.data_dir + '*')
+        flist = glob(self.data_dir + '*')
 
         # Only keep the potential spectra files
         flist = [f for f in flist if not os.path.isdir(f)]
@@ -857,9 +1413,9 @@ class Analyser(object):
         # ---------------------------------------------------------------------
         # Making clear spectra
         # ---------------------------------------------------------------------
-        wave = read_spectrum(clear_list[0]).spectrum[0]
-        idx = [i for i, x in enumerate(wave) if self.fit_window[0] <= x <= self.fit_window[1]]
-        wave = wave[idx]
+        wn = read_spectrum(clear_list[0]).spectrum[0]
+        idx = [i for i, x in enumerate(wn) if self.fit_window[0] <= x <= self.fit_window[1]]
+        wn = wn[idx]
 
         n = len(clear_list)
 
@@ -870,7 +1426,7 @@ class Analyser(object):
             logger.info('Found %i clear sky spectra. Accounting for drift over time' % n)
 
             deg = min([n-1, 2])
-            clear = np.empty([n, len(wave)], dtype=float)
+            clear = np.empty([n, len(wn)], dtype=float)
             for i in range(n):
                 f = read_spectrum(clear_list[i])
                 times[i] = datetime.timestamp(f.dtime)
@@ -901,30 +1457,30 @@ class Analyser(object):
         self.clear_list = clear_list
 
 # ======================================================================================================================
-#                                        Generate self emission background
+#                                       Generate instrument radiance spectrum
 # ======================================================================================================================
     def makeSelfEmission(self):
 
         logger.info('Generating self emission background')
 
         # List all files in directory
-        flist = glob.glob(self.data_dir + '*')
+        flist = glob(self.data_dir + '*')
 
         # Only keep the potential spectra files
         flist = [f for f in flist if not os.path.isdir(f)]
         invalid_extensions = ['pkl', 'csv', 'txt', 'ini', 'dat', 'xls', 'xlsx', 'doc', 'docx', 'jpg', 'png']
         flist = [f for f in flist if f.split('.')[-1] not in invalid_extensions]
 
-        # Look for clear and blackbody spectra and remove from main list
+        # Look for self emission spectra
         self_list = [f for f in flist if any([s in f for s in ['self']])]
 
         # ---------------------------------------------------------------------
         # Making self emission spectra
         # ---------------------------------------------------------------------
-        wave = read_spectrum(self_list[0]).spectrum[0]
-        idx = [i for i, x in enumerate(wave) if self.fit_window[0] <= x <= self.fit_window[1]]
-        wave = wave[idx]
-        self.self_emission_x = wave
+        wn = read_spectrum(self_list[0]).spectrum[0]
+        idx = [i for i, x in enumerate(wn) if self.fit_window[0] <= x <= self.fit_window[1]]
+        wn = wn[idx]
+        self.self_emission_x = wn
 
         n = len(self_list)
 
@@ -935,7 +1491,7 @@ class Analyser(object):
             logger.info('Found %i self emission spectra. Accounting for drift over time' % n)
 
             deg = min([n - 1, 2])
-            self_spectra = np.empty([n, len(wave)], dtype=float)
+            self_spectra = np.empty([n, len(wn)], dtype=float)
             for i in range(n):
                 f = read_spectrum(self_list[i])
                 times[i] = datetime.timestamp(f.dtime)
@@ -949,50 +1505,130 @@ class Analyser(object):
         # Append lists sky name
         self.self_list = self_list
 
+# ======================================================================================================================
+#                                 Generate a spectrum with no gas to isolate Plume T
+# ======================================================================================================================
+    def makeNoGas(self):
 
-    def findEnvelope(self, spectrum, min_T=0.99, margin=1.01):
+        logger.info('Isolating Plume Transmittance')
 
-        # Unpack spectrum
-        wave, spec = spectrum.spectrum
+        # List all files in directory
+        flist = glob(self.data_dir + '*')
 
-        # Generate T reference spectrum with all gases
-        x = self.reference['wave']
-        y = 0
-        for key in self.reference['atm'].keys():
-            if key not in ['ref_column', 'OD_calib', 'H2O']:
-                y = y + self.reference['atm'][key]
-        for key in self.reference['plume'].keys():
-            if key not in ['ref_column', 'OD_calib', 'H2O']:
-                y = y + self.reference['plume'][key]
-        T = np.exp(-y)
+        # Only keep the potential spectra files
+        flist = [f for f in flist if not os.path.isdir(f)]
+        invalid_extensions = ['pkl', 'csv', 'txt', 'ini', 'dat', 'xls', 'xlsx', 'doc', 'docx', 'jpg', 'png']
+        flist = [f for f in flist if f.split('.')[-1] not in invalid_extensions]
 
-        # Project T spectrum onto spectrum grid
-        new_T = griddata(x, T, wave)
+        # Look for spectra with no gas
+        nogas_list = [f for f in flist if any([s in f for s in ['nogas']])]
 
-        # Find indices of T matching threshold (T ~= 1)
-        idx = [i for i, val in enumerate(new_T) if val > min_T]
+        # ---------------------------------------------------------------------
+        # Making self emission spectra
+        # ---------------------------------------------------------------------
+        wn = read_spectrum(nogas_list[0]).spectrum[0]
+        idx = [i for i, x in enumerate(wn) if self.fit_window[0] <= x <= self.fit_window[1]]
+        wn = wn[idx]
+        self.nogas_x = wn
 
-        # What is the degree of the polynomial used in this fit?
-        polydeg = len([p for p in self.params if 'poly' in p]) - 1
+        n = len(nogas_list)
 
-        # Fit polynomial through unity values only
-        poly_object = np.polyfit(wave[idx], spec[idx] * margin, polydeg)
+        times = np.empty(n, dtype=float)
 
-        # Find H2O continuum
-        if 'H2O' in self.params.atmGasList():
-            T_H2O = np.exp(-self.reference['atm']['H2O'])
-        elif 'H2O' in self.params.plumeGasList():
-            T_H2O = np.exp(-self.reference['plume']['H2O'])
+        if n > 1:
+
+            logger.info('Found %i spectra with no gas. Accounting for drift over time' % n)
+
+            deg = min([n - 1, 2])
+            nogas_spectra = np.empty([n, len(wn)], dtype=float)
+            for i in range(n):
+                f = read_spectrum(nogas_list[i])
+                times[i] = datetime.timestamp(f.dtime)
+                nogas_spectra[i, :] = f.spectrum[1][idx]
+            self.nogas_poly = np.polyfit(times, nogas_spectra, deg)
+
         else:
-            T_H2O = 1
-        # Update polynomial parameters to fixed value
-        for p in self.params:
-            if 'poly' in p:
-                i = int(p.replace('poly', ''))
-                self.params[p].set(value=poly_object[i], vary=False)
+            f = read_spectrum(nogas_list[-1])
+            self.nogas = f.spectrum[1][idx]
 
-        # Reset p0
-        self.p0 = self.params.fittedValuesList()
+        # Append lists sky name
+        self.nogas_list = nogas_list
+
+# ======================================================================================================================
+#                                       Generate Source Emissivity spectrum
+# ======================================================================================================================
+    def makeSourceEmissivity(self, smooth=50):
+        """."""
+
+        wn = self.model_grid
+
+        # Determine which source we are using
+        if self.type == 'layer':
+
+            # Read the emissivity file from THOMPSON ET AL. 2021
+            if self.E_file is None:
+                fname = './xsec/F_HI2_OUTPUT_Data.csv'
+            else:
+                fname = self.E_file
+            df = pd.read_csv(fname, skiprows=5)
+            n = len([i for i, x in enumerate(df['Wavenumber']) if (x - df['Wavenumber'][0]) < smooth])
+
+            # Check that the wn axis is within the bounds of the supplied emissivity file
+            if not (wn.min() >= df['Wavenumber'].min() and wn.max() <= df['Wavenumber'].max()):
+                raise ValueError(
+                    'Emissivity data only available over the range %i-%i cm-1 - Requested range of %i-%i cm-1 not (fully) covered'
+                    % (df['Wavenumber'].min(), df['Wavenumber'].max(), wn.min(), wn.max()))
+
+            # Check which temperatures are available
+            temp = 1300
+            logger.info('Using emissivity spectrum from BASALT source at %i K (THOMPSON ET AL. 2021)' % temp)
+            y = df['%i' % temp]
+            y = uniform_filter1d(y, size=n)
+            self.E_model = griddata(df['Wavenumber'], y, wn, method='cubic')
+
+        else:
+            self.E_model = 1
+            logger.info('EMISSIVITY OF SUN SOURCE NOT YET AVAILIABLE')
+
+# ======================================================================================================================
+#                                       Generate Average Residual
+# ======================================================================================================================
+    def makeResidual(self, smooth=20):
+
+        fill ={'meas': 'measurement', 'bkg': 'background'}
+        if self.res_dir is None:
+            raise ValueError('No directory given to calculate reisudal from a previous fit')
+        fdir = self.res_dir
+        if not fdir.endswith('/'):
+            fdir = fdir + '/'
+        logger.info('Using average %s residual from previous fit: %s' % (fill[type], fdir))
+        files = glob(fdir + 'spectral_fits/*_FIT0.csv')
+        files.sort()
+        fitResult = pd.read_csv(glob(fdir + 'fitResult*_ALL.csv')[0])
+        df = pd.read_csv(files[0])
+
+        nfiles = len(files)
+        wn = df['wn']
+        nwave = len(wn)
+        spacing = wn[1] - wn[0]
+        nsmooth = int(smooth / spacing)
+
+        residuals = np.empty([nfiles, nwave], dtype=float)
+        r2_thresh = 0.9
+        for i, fname in enumerate(tqdm(files, desc='Extracting')):
+            df = pd.read_csv(fname)
+            res = 1 + (df['meas'] - df['model']) / df['meas']
+            r2 = fitResult['MIN R2'][i]
+            if r2 > r2_thresh:
+                residuals[i, :] = res
+            else:
+                residuals[i, :] = np.ones(len(wn)) * np.nan
+
+        res = np.nanmean(residuals, axis=0)
+        res = uniform_filter1d(res, size=nsmooth)
+        res = griddata(wn, res, self.model_grid, method='cubic', fill_value=1.0)
+        self.res_model = res
+
 
 
 # ======================================================================================================================
@@ -1017,6 +1653,16 @@ class Analyser(object):
             except:
                 bkg = griddata(self.self_emission_x, self.self_emission, x)
             y = y - bkg
+
+        # Isolate plume transmittance with no gas spectrum (Active geometry only)
+        if self.no_gas:
+            try:
+                timestamp = datetime.timestamp(spectrum.dtime)
+                nogas = np.polyval(self.nogas_poly, timestamp) - bkg
+            except:
+                nogas = griddata(self.nogas_x, self.nogas, x) - bkg
+            y = y / nogas
+            new_spectrum.spec_type = 'tra'
 
         # Remove zero and negative values
         if trim_type == 'cutoff':
@@ -1067,6 +1713,12 @@ class Analyser(object):
             else:
                 pass
 
+        if self.use_source_E:
+            self.E_meas = griddata(self.model_grid, self.E_model, x)
+
+        if self.use_residual:
+            self.res_meas = griddata(self.model_grid, self.res_model, x)
+
         new_spectrum.update(spectrum=np.row_stack([x, y]))
 
         return new_spectrum
@@ -1074,31 +1726,41 @@ class Analyser(object):
 # ======================================================================================================================
 #                                               Fit Spectrum
 # ======================================================================================================================
-    def fitSpectrum(self, spectrum, update_params=True, resid_type='Absolute', preProcess=True, use_bounds=True,
-                    findEnvelope=False):
+    def fitSpectrum(self, spectrum, update_params=False, resid_type='Absolute', preProcess=True, use_bounds=True):
         """
-        
-        :param spectrum: 
-        :param update_params: 
-        :param resid_type: 
-        :param preProcess: 
-        :return: 
+
+        :param spectrum:
+        :param update_params:
+        :param resid_type:
+        :param preProcess:
+        :return:
         """
 
         # Get the right forward
         if self.type == 'emission':
             forwardModel = self.forwardEmission
+        else:
+            forwardModel = self.forwardTransmission
 
         # Check if spectrum requires preprocessing
         if preProcess:
             spectrum = self.preProcess(spectrum)
 
-        # Fix polynomial envelope
-        if findEnvelope:
-            self.findEnvelope(spectrum)
-
         # Unpack the spectrum
         grid, spec = spectrum.spectrum
+
+        # Use parameters from previous fit?
+        if len(self.from_df) > 0:
+            i = [i for i, x in enumerate(self.df_dir['File']) if x == spectrum.fname.split('/')[-1]][0]
+            for p in self.from_df:
+                if p in self.params:
+                    if p in possible_gases:
+                        value = self.df_dir['%s_val' % p][i]
+                    else:
+                        value = self.df_dir[p][i]
+                    self.params[p].value = value
+        if len(self.seed_param) > 0:
+            self.p0 = self.params.fittedValuesList()    # Reset initial guess based on updated values
 
         # Fit the spectrum
         try:
@@ -1120,32 +1782,132 @@ class Analyser(object):
             nerr = 0
 
         # Put the results into a FitResult object
-        fit_result = FitResult(spectrum, self.params, self.geometry, popt, perr, nerr,
-                               forwardModel, resid_type)
+        fit_result = FitResult(spectrum, self, popt, perr, nerr, forwardModel, resid_type)
 
         if fit_result.r2 < 0:
             popt = np.full(len(self.p0), np.nan)
             perr = np.full(len(self.p0), np.nan)
             nerr = 0
-            fit_result = FitResult(spectrum, self.params, self.geometry, popt, perr, nerr,
-                                   forwardModel, resid_type)
+            fit_result = FitResult(spectrum, self, popt, perr, nerr, forwardModel, resid_type)
 
         # If the fit was good then update the initial parameters
         if update_params and fit_result.nerr == 1:
             self.p0 = popt
         else:
-            # logger.info('Resetting initial guess parameters')
             self.p0 = self.params.fittedValuesList()
 
         return fit_result
 
 # ======================================================================================================================
-#                                          Emission Forward Model
+#                                          Transmission Forward Model
 # ======================================================================================================================
-    def forwardEmission(self, wave_x, *p0):
+    def forwardTransmission(self, wn, *p0):
         """
 
-        :param wave_x:
+        :param wn:
+        :param p0:
+        :return:
+        """
+
+        # Get dictionary of fitted parameters
+        params = self.params
+        p = params.valuesDict()
+
+        # Update the fitted parameter values with those supplied to the forward
+        i = 0
+        for par in params.values():
+            if par.vary:
+                p[par.name] = p0[i]
+                i += 1
+            else:
+                p[par.name] = par.value
+
+        # Unpack polynomial parameters and construct background polynomial
+        poly_object = [p[n] for n in p if 'poly' in n]
+        if len(poly_object) == 0:
+            bg_poly = 1
+        else:
+            bg_poly = np.polyval(poly_object, self.model_grid)
+
+        # Calculate the gas optical depth spectra for Atmospheric Gases
+        OD_atm = 0
+        atm_gases = [params[n].name for n in p if params[n].atm_gas]
+        for gas in atm_gases:
+            if gas in continuum_gases:
+                OD_atm = OD_atm + np.polyval(self.reference['atm']['OD_calib'][gas], p[gas])
+            else:
+                OD_atm = OD_atm + p[gas] * self.reference['atm'][gas]
+        T_atm = np.exp(-OD_atm)
+
+        # Calculate the gas optical depth spectra for Plume Gases
+        OD_plume = 0
+        plume_gases = [params[n].name for n in p if params[n].plume_gas]
+        for gas in plume_gases:
+            if gas in continuum_gases:
+                OD_plume = OD_plume + np.polyval(self.reference['plume']['OD_calib'][gas], p[gas])
+            elif self.retrieval.fit_gas_temp:
+                if self.retrieval.dual_temp:
+                    for i in range(10):
+                        t = self.geometry.atm_temp + (i + 1) * (p['gas_temp'] - p['gas_temp2']) / 10
+                        OD_plume = OD_plume + p[gas] / 10 * np.polyval(self.reference['plume']['OD_calib'][gas], t)
+                else:
+                    OD_plume = OD_plume + p[gas] * np.polyval(self.reference['plume']['OD_calib'][gas], p['gas_temp'])
+            else:
+                OD_plume = OD_plume + p[gas] * self.reference['plume'][gas]
+
+        # Add the optical depth spectra for Plume Aerosols
+        plume_aero = [params[n].name for n in p if params[n].plume_aero]
+        for aero in plume_aero:
+            OD_plume = OD_plume + p[aero] * np.polyval(self.reference['plume'][aero]['Bext'], np.log10(p[aero + '_deff']))
+
+        # Calculate transmittance (and emissivity) of the plume
+        T_plume = np.exp(-OD_plume)
+        E_plume = 1 - T_plume
+
+        # Compute model spectrum at full resolution
+        if self.no_gas:
+            F_raw = T_plume * T_atm * bg_poly
+            if self.retrieval.model_gas_emission:
+                Bg = planck(self.model_grid, p['gas_temp']) / planck(self.model_grid, p['source_temp'])
+                F_raw = F_raw + Bg * E_plume * bg_poly
+        else:
+            F_raw = self.E_model * self.res_model * T_plume * T_atm * bg_poly
+            if self.retrieval.model_gas_emission:
+                # Bp = p['hot_frac'] + planck(self.model_grid, self.geometry.atm_temp) / planck(self.model_grid, p['source_temp']) * (1 - p['hot_frac'])
+                if self.retrieval.dual_temp:
+                    Bg = 0
+                    for i in range(10):
+                        t = self.geometry.atm_temp + (i + 1) * (p['gas_temp'] - p['gas_temp2']) / 10
+                        Bg = Bg + planck(self.model_grid, t) / 10
+                    Bg = Bg / planck(self.model_grid, p['source_temp'])
+                else:
+                    Bg = planck(self.model_grid, p['gas_temp']) / planck(self.model_grid, p['source_temp'])
+                F_raw = F_raw + Bg * p['E_frac'] * E_plume * self.res_model * T_atm * bg_poly
+
+        # Generate ILS and convolve
+        kernel = makeILS(fov=p['fov'], nper_wn=self.nper_wn, wn=(wn.max() - wn.min()) / 2, max_opd=p['max_opd'],
+                         apod_type=self.apod_type)['kernel']
+        F_conv = np.convolve(F_raw, kernel, 'same')
+
+        # Apply offset
+        F_offset = F_conv + p['offset']
+
+        # Apply shift to the model_grid
+        shift_model_grid = np.add(self.model_grid, p['nu_shift'])
+
+        # Interpolate model spectrum onto spectrometer grid
+        model = griddata(shift_model_grid, F_offset, wn, method='cubic')
+
+        return model
+
+
+# ======================================================================================================================
+#                                          Emission Forward Model
+# ======================================================================================================================
+    def forwardEmission(self, wn, *p0):
+        """
+
+        :param wn:
         :param p0:
         :return:
         """
@@ -1239,7 +2001,8 @@ class Analyser(object):
 
         # ----- 6: Generate ILS, shift and offset and project onto spectrometer grid ------
         # ILS
-        kernel = ils(fov=p['fov'], n_per_wave=self.n_per_wave, start_wave=wave_x.min())['kernel']
+        # kernel = makeILS1(fov=p['fov'], nper_wn=self.nper_wn, wn_start=wn.min())['kernel']
+        kernel = makeILS(fov=p['fov'], nper_wn=self.nper_wn, wn=(wn.max() - wn.min()) / 2)['kernel']
         F_conv = np.convolve(F_raw, kernel, 'same')
 
         # Offset
@@ -1249,99 +2012,9 @@ class Analyser(object):
         shift_model_grid = np.add(self.model_grid, p['nu_shift'])
 
         # Interpolate
-        model = griddata(shift_model_grid, F_offset, wave_x, method='cubic')
+        model = griddata(shift_model_grid, F_offset, wn, method='cubic')
 
         return model
-
-
-
-# ======================================================================================================================
-#                                               Pretty Print
-# ======================================================================================================================
-    def prettyPrint(self, width=99):
-
-        # Define sections
-        atm_gases = self.params.atmGasList()
-        plume_gases = self.params.plumeGasList()
-        plume_aero = self.params.plumeAeroList()
-        all = atm_gases + plume_gases + plume_aero
-        cols = ['Parameter', 'Fit?', 'A priori', 'Min', 'Max']
-        colwidth = [width // 6 * 2 - 1, width // 6, width // 6, width // 6, width // 6]
-
-        # Title
-        msg = '\n'
-        msg += f'{"=" * (width + 2)}\n'
-        title = "%s MODEL PARAMETERS- %s GEOMETRY" % (self.name, self.geometry.type.upper())
-        msg += '|' + f'{title:^{width}}' + '|\n'
-        msg += f'{"=" * (width + 2)}\n'
-
-        # ---------------------------------------------------------------------
-        # Geometry drawing
-        # ---------------------------------------------------------------------
-        if self.geometry.type == 'emission':
-            msg += '|' + '                  /'.ljust(width, ' ') + '|\n'
-            msg += '|' + '                 /'.ljust(width // 2, ' ') + ' ' + 'ATMOSPHERE '.center(width // 2,
-                                                                                                  ' ') + '|\n'
-            msg += '|' + '                /'.ljust(width // 2,
-                                                   ' ') + ' ' + f'{"[%s]" % ", ".join(atm_gases):^{width // 2}}' + '|\n'
-        msg += '|' + '               /'.ljust(width // 2 - 10, ' ') + ''.center(21, '_') \
-               + ''.rjust(width // 2 - 10, ' ') + '|\n'
-        msg += '|' + '              /'.ljust(width // 2 - 11, ' ') + '/' + 'PLUME LAYER'.center(21, ' ') \
-               + '\ '.ljust(width // 2 - 10, ' ') + '|\n'
-        msg += '|' + '             /'.ljust(width // 2 - 12, ' ') + '/ ' + (
-                    'Temp: %i K' % self.geometry.plume_temp).center(21, ' ') \
-               + ' \ '.ljust(width // 2 - 10, ' ') + '|\n'
-        msg += '|' + '___________ /'.ljust(width // 2 - 13, '_') + '/ ' + (
-                    'Pres: %i mb' % self.geometry.plume_pres).center(21, ' ') \
-               + '   \_' + (' Height: %.2f km ' % self.geometry.plume_height).center(width // 2 - 14, '_') + '|\n'
-        msg += '|' + '           /'.ljust(width // 2 - 13, ' ') + '\ ' + ("[%s]" % ', '.join(plume_gases)).center(21,
-                                                                                                                  ' ') \
-               + '   /' + (' Thickness: %.2f km ' % self.geometry.plume_thickness).center(width // 2 - 13,
-                                                                                              ' ') + '|\n'
-        msg += '|' + '          /'.ljust(width // 2 - 12, ' ') + '\ ' + ("[%s]" % ', '.join(plume_aero)).center(21, ' ') \
-               + ' / '.ljust(width // 2 - 10, ' ') + '|\n'
-        msg += '|' + '         /'.ljust(width // 2 - 11, ' ') + '\_' + ''.center(20, '_') \
-               + '/'.ljust(width // 2 - 10, ' ') + '|\n'
-        msg += '|' + '      __/' + (' Angle: %.1f deg' % self.geometry.elev).ljust(width - 9, ' ') + '|\n'
-        msg += '|' + '     |__|------------------'.ljust(width, ' ') + '|\n'
-        msg += '|' + '      /\ '.ljust(width // 2, ' ') + ' ' + \
-               ('Observer height: %.2f km' % self.geometry.obs_height).center(width // 2, ' ') + '|\n'
-
-        msg += f'{"=" * (width + 2)}\n'
-
-        # ---------------------------------------------------------------------
-        # Fit model parameters
-        # ---------------------------------------------------------------------
-        msg += '|' + " FIT WINDOW:".ljust(25, ' ') + (
-                    "%i - %i cm^-1" % (self.fit_window[0], self.fit_window[1])).ljust(width - 25) + '|\n'
-        if len(atm_gases) == 0: atm_gases = ['None']
-        msg += '|' + " ATMOSPHERIC GASES:".ljust(25, ' ') + ("%s" % ', '.join(atm_gases)).ljust(width - 25) + '|\n'
-        if len(plume_gases) == 0: plume_gases = ['None']
-        msg += '|' + " PLUME GASES:".ljust(25, ' ') + ("%s" % ', '.join(plume_gases)).ljust(width - 25) + '|\n'
-        if len(plume_aero) == 0: plume_aero = ['None']
-        msg += '|' + " PLUME AEROSOLS:".ljust(25, ' ') + ("%s" % ', '.join(plume_aero)).ljust(width - 25) + '|\n'
-
-        msg += '|' + f'{"-" * width}' + '|\n'
-
-        title = ''
-        for n, c in enumerate(cols):
-            title += f'|{c:^{colwidth[n]}}'
-        msg += title + '|\n'
-
-        msg += '|' + f'{"-" * width}' + '|\n'
-
-        for name, p in self.params.items():
-            if name not in all:
-                cols = [name, f'{p.vary}', f'{p.value}', f'{p.min}', f'{p.max}']
-                line = ''
-                for n, c in enumerate(cols):
-                    line += f'|{c:^{colwidth[n]}}'
-                msg += line + '|\n'
-
-        msg += f'{"=" * (width + 2)}\n'
-
-        # Pass to logger for display
-        logger.info(msg)
 
 
 # ======================================================================================================================
@@ -1356,23 +2029,21 @@ class FitResult(object):
 # ======================================================================================================================
 #                                               Initialise Object
 # ======================================================================================================================
-    def __init__(self, spectrum, params, geometry, popt, perr, nerr, fwd_model,
-                 resid_type):
+    def __init__(self, spectrum, analyser, popt, perr, nerr, forwardModel, resid_type):
         """Initialize"""
 
         # Get the timestamp from spectrum
         self.dtime = spectrum.dtime
-        # Make a copy of the parameters
-        self.params = params
 
         # Assign the variables
         self.spec_type = spectrum.spec_type
         self.grid, self.spec = spectrum.spectrum
-        self.geometry = geometry
+        self.params = analyser.params
+        self.geometry = analyser.geometry
         self.popt = popt
         self.perr = perr
         self.nerr = nerr
-        self.fwd_model = fwd_model
+        self.fwd_model = forwardModel
         self.resid_type = resid_type
 
         # Add the fit results to each parameter
@@ -1394,9 +2065,9 @@ class FitResult(object):
             self.model = self.fwd_model(self.grid, *self.popt)
 
             # Calculate the residual
-            if self.resid_type == 'Percentage':
-                self.res = (self.spec - self.model) / self.spec * 100
-            else:
+            if self.resid_type == 'Relative':
+                self.res = (self.spec - self.model) / self.spec
+            elif self.resid_type == 'Absolute':
                 self.res = self.spec - self.model
             self.rmse = mean_squared_error(self.spec, self.model)
             self.r2 = r2_score(self.spec, self.model)
@@ -1410,12 +2081,36 @@ class FitResult(object):
                         partial[i] = value
                 self.bkg = self.fwd_model(self.grid, *partial)
 
+            else:
+                p_object = [self.params[x].fit_val for x in self.params if 'poly' in x]
+                self.bg_poly = np.polyval(p_object, self.grid)
+                # Emissivity spectrum
+                if self.geometry.type == 'layer' and analyser.use_source_E:
+                    self.E = analyser.E_meas
+                else:
+                    self.E = np.ones(len(self.grid))
+                # Instrument residual
+                if self.geometry.type == 'layer' and analyser.use_residual:
+                    self.instr_res = analyser.res_meas
+                else:
+                    self.instr_res = np.ones(len(self.grid))
+                # Offset
+                if self.params['offset'].vary:
+                    self.offset = np.ones(len(self.grid)) * self.params['offset'].fit_val
+                else:
+                    self.offset = np.zeros(len(self.grid))
+                self.bkg = self.bg_poly * self.E * self.instr_res + self.offset
+
         # If not then return nans
         else:
             # logger.info('Fit failed!')
             self.model = np.full(len(self.spec), np.nan)
             self.res = np.full(len(self.spec), np.nan)
             self.bkg = np.full(len(self.spec), np.nan)
+            self.E = np.full(len(self.spec), np.nan)
+            self.instr_res = np.full(len(self.spec), np.nan)
+            self.bg_poly = np.full(len(self.spec), np.nan)
+            self.offset = np.full(len(self.spec), np.nan)
             self.rmse = np.nan
             self.r2 = np.nan
 

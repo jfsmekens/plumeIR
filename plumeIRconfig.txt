@@ -51,8 +51,8 @@ use_bounds	: 	True			# Use bounds for fits					()
 
 # How to treat Aerosols
 plume_aero	: 	None			# Use aerosols in all fits?
-fit_size_aero	:	True			# Fit size of aerosols?					()
-use_Babs_aero	: 	True			# Use Babs instead of Text for aerosols 			()
+fit_size_aero	:	False			# Fit size of aerosols?					()
+use_Babs_aero	: 	False			# Use Babs instead of Text for aerosols 			()
 
 # For emission fits
 fit_difference	:	True			# Fit the difference spectrum?				(Requires at least 1 clear sky in folder)
@@ -92,7 +92,7 @@ fit		:	True			# Use this fit?						()
 fit_window	:	700, 1300		# Fit window			[cm-1]			()
 atm_gases	:	H2O, O3, CO2, N2O, CH4		# List of atmospheric gases				()
 fix_atm_gas	:	None				# Set the conc of those gas species in the plume layer	()
-plume_gases	:	SO2, SiF4			# List of plume gases				()
+plume_gases	:	CO2, SO2, SiF4			# List of plume gases				()
 plume_aero	: 	H2SO4, ASH			# List of plume aerosols				()
 targets		:	SO2, H2SO4, ASH, SiF4, CO2, H2O		# Target species					()
 

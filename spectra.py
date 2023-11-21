@@ -9,6 +9,7 @@ Defines the object class Spectrum.
 from brukeropusreader import read_file as read_opus
 from pyspectra.readers import read_spc
 from datetime import datetime
+from scipy.interpolate import griddata
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -285,8 +286,8 @@ class Spectrum():
 
         self.npts = len(y)                      # Length of the spectrum
         self.spacing = (x[1:] - x[0:-1]).mean() # Spectral resolution
-        self.start_wave = x.min()               # Start wavenumber
-        self.end_wave = x.max()                 # End wavenumber
+        self.wn_start = x.min()               # Start wavenumber
+        self.wn_stop = x.max()                 # End wavenumber
 
         self.dtime = dtime                      # Timestamp
 
@@ -359,8 +360,8 @@ class Spectrum():
                 self.spectrum = spectrum
                 self.npts = len(y)
                 self.spacing = (x[1:] - x[0:-1]).mean()
-                self.start_wave = x.min()
-                self.end_wave = x.max()
+                self.wn_start = x.min()
+                self.wn_stop = x.max()
 
             else:
                 raise ValueError('Spectrum must be provided as a tuple with tow arrays of the same dimension')
@@ -379,3 +380,22 @@ class Spectrum():
 
         if fname is not None:
             self.fname = fname
+
+    def trim(self, wn_start, wn_stop):
+        """."""
+        x, y = self.spectrum
+        idx = np.where(np.logical_and(x >= wn_start, x <= wn_stop))
+        x = x[idx]
+        y = y[idx]
+        self.spectrum = np.row_stack([x, y])
+
+    def degrade(self, spacing):
+        """."""
+        x, y = self.spectrum
+        xnew = np.arange(x.min(), x.max(), step=spacing)
+        ynew = griddata(x, y, xnew, method='cubic')
+        self.spectrum = np.row_stack([xnew, ynew])
+        self.spacing = spacing
+        self.npts = len(xnew)
+        self.wn_start = xnew.min()
+        self.wn_stop = xnew.max()

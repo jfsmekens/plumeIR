@@ -1,12 +1,13 @@
 """
 Written by @jfsmekens
-Last updated 01/04/2022
+Last updated 01/06/2021
 
 This module contains small functions to convert units
 
 """
 import numpy as np
 from constants import *
+# from customXSC import makePSD
 
 # ----------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------
@@ -116,11 +117,40 @@ def mcm2gm2(mcm, species):
 
 def gm2mcm2(gm2, species):
 
-    avo = 6.02214e23  # Avogadro constrant [mol-1]
+    avo = 6.02214e23  # Avogadro constant [mol-1]
     mol_weight = weights[species]
     mcm = gm2 / mol_weight * avo / 1e4
 
     return mcm
+
+# def gm2N(gm2, species, comp, size, psd=True):
+#
+#     # 1: Determine appropriate density
+#     if species == 'WATER':
+#         density = 1000
+#     elif species == 'H2SO4':
+#         density = 1830 * comp
+#     elif species == 'ASH':
+#         density = 2600
+#
+#     # 2: If particles all have the same size
+#     if not psd:
+#         size_SI = size * 1e-6  # For SI units operations
+#         particle_mass = 4 / 3 * np.pi * (size_SI / 2) ** 3 * density
+#         N_SI = gm2 * 1e-3 / particle_mass
+#
+#     # 3: If particles are spread along a psd
+#     else:
+#         sigma = 1.5
+#         size_psd = makePSD(size, sigma)
+#         bins_SI = size_psd['bins'] * 1e-6  # For SI units operations
+#         frac = size_psd['frac']
+#         particle_mass = 4 / 3 * np.pi * (bins_SI / 2) ** 3 * density
+#         mass_frac = particle_mass * frac
+#         mass_frac = mass_frac / mass_frac.sum()
+#         N_SI = np.sum(gm2 * 1e-3 * mass_frac / particle_mass)
+#
+#     return N_SI
 
 
 def RH2ppm(RH, pres=1013, temp=298):
@@ -190,3 +220,51 @@ def ppm2RH(ppm, pres=1013, temp=298):
     RH = ppm * pres / Psat * 100 / 1e6
 
     return RH
+
+def Psat(temp):
+
+    if temp > 273.16:  # Saturation over water
+
+        # Constants
+        Tc = 647.096  # Critical temperature [in K]
+        Pc = 220640  # Critical pressure [in hPa]
+        c1 = -7.85951783
+        c2 = 1.84408259
+        c3 = -11.7866497
+        c4 = 22.6807411
+        c5 = -15.9618719
+        c6 = 1.80122502
+
+        t = 1 - (temp / Tc)  # New variable
+        polyfit = Tc / temp * (c1 * t + c2 * t ** 1.5 + c3 * t ** 3 + c4 * t ** 3.5 + c5 * t ** 4 + c6 * t ** 7.5)
+        Psat = np.exp(polyfit) * Pc
+
+    else:  # Saturation over ice
+
+        # Constants
+        Pn = 6.11657  # Vapor pressure at triple point temperature [in hPa]
+        Tn = 273.16  # Triple point temperature [in K]
+        a0 = -13.928169
+        a1 = 34.707823
+
+        t = temp / Tn  # New variable
+        polyfit = a0 * (1 - t ** -1.5) + a1 * (1 - t ** -1.25)
+        Psat = np.exp(polyfit) * Pn
+
+    return Psat
+
+def c2k(deg):
+    return deg + 273.15
+
+def k2c(kelv):
+    return kelv - 273.15
+
+def f2c(far):
+    return (far - 32) / 1.8
+
+def c2f(deg):
+    return deg * 1.8 + 32
+
+def f2k(far):
+    return (far - 32) / 1.8 + 273.15
+

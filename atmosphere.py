@@ -140,10 +140,10 @@ def resampleAtm(fname, outpath=False):
     # Write header
     if "header" in atm.keys():
         header = atm['header']
-        header.append('! Resampled onto plumeIR vertical grid')
+        header.append('! Resampled onto plumeIR_dev vertical grid')
     else:
         header = '! RFM atmospheric profile'
-        header.append('! Resampled onto plumeIR vertical grid')
+        header.append('! Resampled onto plumeIR_dev vertical grid')
     out['header'] = header
 
     # ---------------  1: SCALE ATM PROFILES  --------------------
@@ -804,7 +804,7 @@ def plotAtm(atm, title='RFM atmosphere'):
     # ------------------------------------------------------------------
     fig, ((ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9, ax10),
           (ax11, ax12, ax13, ax14, ax15, ax16, ax17, ax18, ax19, ax20)) \
-        = plt.subplots(2, 10, figsize=[16.0,8.0], tight_layout=True)
+        = plt.subplots(2, 10, figsize=[16.0, 8.0], tight_layout=True)
     # fig.subplots_adjust(hspace=0.02)
     fig.suptitle(title)
 
@@ -915,18 +915,18 @@ def plotAtm(atm, title='RFM atmosphere'):
 # ----------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------
 
-def writeRFMdrv(start_wave, end_wave, n_per_wave, height=0.0, elev=90.0, atm="./atm/mls.atm", levels=[],
+def writeRFMdrv(wn_start, wn_stop, npwer_wn, height=0.0, elev=90.0, atm="./atm/mls.atm", levels=[],
                 gas="H2O", layer=False, conc={'H2O': 18000}, pres=1013, temp=298, out="RAD BBT OPT TRA",
                 pathlength=0.1, CTM=True, MIX=True, PRF=False):
     """
     This function writes the RFM driver for a slant path looking upward into the atmosphere
 
-    SYNTAX: writeRFMdrv(start_wave, end_wave, n_per_wave, height=0.0, elev=90.0, atm="mid_lat_summer.atm",
+    SYNTAX: writeRFMdrv(wn_start, wn_stop, npwer_wn, height=0.0, elev=90.0, atm="mid_lat_summer.atm",
                                 levels=[])
 
-    :param start_wave: Start of simulation range                                                    [cm^-1]
-    :param end_wave: End of simulation range                                                        [cm^-1]
-    :param n_per_wave: Resolution of the simulation in points                                       [per cm^-1]
+    :param wn_start: Start of simulation range                                                    [cm^-1]
+    :param wn_stop: End of simulation range                                                        [cm^-1]
+    :param npwer_wn: Resolution of the simulation in points                                       [per cm^-1]
     :param height: Height of the observer                                                           [km]
                     Default is 0.0
     :param elev: Elevation angle of the slant path                                                  [degrees]
@@ -989,7 +989,7 @@ def writeRFMdrv(start_wave, end_wave, n_per_wave, height=0.0, elev=90.0, atm="./
     # ---------------------- SPC SECTION  -----------------------
     # Write Grid Details
     drv.write("*SPC\n")
-    drv.write("%f\t%f\t%f" % (start_wave, end_wave, n_per_wave))
+    drv.write("%f\t%f\t%f" % (wn_start, wn_stop, npwer_wn))
     drv.write("\n\n")
 
     # ---------------------- GAS SECTION  -----------------------
@@ -1034,7 +1034,7 @@ def writeRFMdrv(start_wave, end_wave, n_per_wave, height=0.0, elev=90.0, atm="./
     # ---------------------- HIT SECTION  -----------------------
     # Define location of HITRAN
     drv.write("*HIT\n")
-    drv.write("./RFM/Hitran/hitran_2008.bin")
+    drv.write("./RFM/Hitran/hitran_2020.bin")
     drv.write("\n\n")
 
     # # ---------------------- LEV SECTION  -----------------------
@@ -1147,10 +1147,10 @@ def readRFM(fname):
 
         ['header']      a list of strings with the first few lines of the file          String
         ['type']        the output data type                                            String
-        ['start_wave]   the start of the spectral range                                 Float               [cm^-1]
-        ['end_wave]     the end of the spectral range                                   Float               [cm^-1]
+        ['wn_start]   the start of the spectral range                                 Float               [cm^-1]
+        ['wn_stop]     the end of the spectral range                                   Float               [cm^-1]
         ['step]         the step interval between data points                           Float               [cm^-1]
-        ['wave']        the X axis of the dataset in wavenumbers                        Float (array)       [cm^-1]
+        ['wn']        the X axis of the dataset in wavenumbers                        Float (array)       [cm^-1]
         ['data']        the spectrum                                                    Float (array)
 
     """
@@ -1170,27 +1170,27 @@ def readRFM(fname):
     # Extract Grid details
     grid = temp[3].split()
     npts        = int(grid[0])
-    start_wave  = float(grid[1])
+    wn_start  = float(grid[1])
     resolution  = float(grid[2])
-    end_wave    = float(grid[3])
+    wn_stop    = float(grid[3])
     type        = grid[4][1:]
 
     # Append grid details
     output['npts']          = npts
-    output['start_wave']    = start_wave
+    output['wn_start']    = wn_start
     output['resolution']    = resolution
-    output['end_wave']      = end_wave
+    output['wn_stop']      = wn_stop
     output['type']          = type
 
     # Make X-axis
-    # wave = np.empty(len(temp[4].split()))
-    # for i in range(len(wave)): wave[i] = start_wave + i * resolution
-    # output['wave'] = wave
-    output['wave'] = np.linspace(start_wave, end_wave,len(temp[4].split()))
+    # wn = np.empty(len(temp[4].split()))
+    # for i in range(len(wn)): wn[i] = wn_start + i * resolution
+    # output['wn'] = wn
+    output['wn'] = np.linspace(wn_start, wn_stop,len(temp[4].split()))
 
     # Read data
     # data = np.empty(len(temp[4].split()))
-    # for i in range(len(wave)): data[i] = float(temp[4].split()[i])
+    # for i in range(len(wn)): data[i] = float(temp[4].split()[i])
     # output['data'] = data
     output['data'] = np.asarray([float(x) for x in temp[4].split()])
 
@@ -1299,7 +1299,7 @@ def readSounding(fname):
 # ----------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------
 
-def plotRFM(rfm):
+def plotRFM(rfm, main='wn', reverse=False):
     """Plot an RFM output file with axes labelled according to its type"""
 
     if isinstance(rfm, str):
@@ -1307,6 +1307,110 @@ def plotRFM(rfm):
 
     fig, ax = plt.subplots(figsize=[12, 6])
 
-    ax.plot(rfm['wave'], rfm['data'])
+    ax.plot(rfm['wn'], rfm['data'])
+    if reverse:
+        ax.invert_xaxis()
     ax.set(xlabel='Wavenumber [$cm^{-1}$]', ylabel=rfm['type'])
 
+    if rfm['wn'].max() < 10000:
+        # Add micron wnlength axis
+        def fw(x):
+            return 10000 / x
+
+        umax = ax.secondary_xaxis('top', functions=(fw, fw))
+        umax.minorticks_on()
+        umax.set_xlabel('Wavelength [$\mu$m]')
+    else:
+        # Add nanometer wnlength axis
+        def fw(x):
+            return 1e7 / x
+
+        umax = ax.secondary_xaxis('top', functions=(fw, fw))
+        umax.minorticks_on()
+        umax.set_xlabel('Wavelength [$nm$]')
+
+
+def readStd(fname, returnStd=False):
+
+    # Read lines from text file
+    with open(fname, 'r') as f:
+        lines = f.readlines()
+
+    # Extract header and column names
+    atm = {}
+    atm['header'] = [lines[0]]
+    keys = lines[1].split()[1:]
+
+    # Extract the values in each column
+    std = {}
+    for key in keys:
+        std[key] = []
+    for l in lines[2:]:
+        for i, key in enumerate(keys):
+            std[key].append(float(l.split()[i]))
+
+    # Make into numpy arrays
+    for key in std.keys():
+        std[key] = np.asarray(std[key])
+
+    # Creating RFM atmosphere object (from molec.cm^-3 to ppmv)
+    for key in std.keys():
+        if key == 'z(km)':
+            atm['HGT'] = std[key]
+        elif key == 'p(mb)':
+            atm['PRE'] = std[key]
+        elif key == 'T(K)':
+            atm['TEM'] = std[key]
+        elif '(cm-3)' in key and 'air' not in key:
+            atm[key.replace('(cm-3)', '').upper()] = std[key] / std['air(cm-3)'] * 1e6
+
+    # Flip the vertical profiles
+    for key in atm.keys():
+        if key != 'header':
+            atm[key] = np.flip(atm[key])
+
+    if returnStd:
+        return atm, std
+    else:
+        return atm
+
+def plotAtm2(atm, title='RFM atmosphere', upto=None):
+
+    """
+    This function plots the atmospheric profile structure generated by either modifyAtm1 or modifyAtm2
+
+    SYNTAX: plotAtm(atm)
+
+    :param atm: Atmospheric profile structure
+    :param title: Title for the plot. Default is 'RFM Atmosphere'
+
+    :return: -none-
+    """
+    # ------------------------------------------------------------------
+    # -------------------------  PLOT ----------------------------------
+    # ------------------------------------------------------------------
+
+    gases = [key for key in atm.keys() if key not in ['HGT', 'PRE', 'TEM', 'header']]
+    n = 2 + len(gases)
+
+    fig, axes = plt.subplots(1, n, figsize=[2.5 + n * 1.25 , 6], tight_layout=True)
+    fig.suptitle(title)
+
+    for i, key in enumerate(['PRE', 'TEM'] + gases):
+        if key in plot_colors.keys():
+            color = plot_colors[key]
+        else:
+            color = 'tab:grey'
+        title = key
+        if key in gases:
+            xlabel = ['ppmv']
+        elif key == 'PRE':
+            xlabel = '[mb]'
+        elif key == 'TEM':
+            xlabel = '[K]'
+
+        # --- Top panels ---
+        axes[i].plot(atm[key], atm['HGT'], c=color)
+        axes[i].set(title=title, ylabel='Height [km]', xlabel=xlabel, ylim=[0, upto])
+        axes[i].tick_params(axis="y", direction="in", right="on")
+        axes[i].label_outer()
