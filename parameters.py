@@ -13,6 +13,7 @@ import numpy as np
 from collections import OrderedDict
 from atmosphere import readAtm, modifyAtm, resampleAtm
 from initialise import readStandard
+from constants import gas_temps, atm_temps
 
 
 # ======================================================================================================================
@@ -62,6 +63,12 @@ class Parameters(OrderedDict):
 
             self.__setitem__(param.name, param)
 
+    def set(self, min=None, max=None, value=None):
+        self.min = min
+        self.max = max
+        self.value = value
+
+
     def extract(self, fit, retrieval, geometry):
         """Extract parameters from a FIT section in the config file"""
 
@@ -101,10 +108,11 @@ class Parameters(OrderedDict):
         for species in atm_gases:
             if species is not None:
                 if retrieval.type == 'emission':
-                    if fit['fix_atm_gas'] is not None:
-                        vary = species not in fit['fix_atm_gas']
-                    else:
-                        vary = True
+                    # if fit['fix_atm_gas'] is not None:
+                    #     vary = species not in fit['fix_atm_gas']
+                    # else:
+                    #     vary = True
+                    vary = True
                     self.add(species, value=1e-12, atm_gas=True, target=species in targets,
                                min=-np.inf, max=np.inf, vary=vary)
                 else:
@@ -126,7 +134,7 @@ class Parameters(OrderedDict):
                            min=std[species]['vmin'], max=std[species]['vmax'])
 
         # Add the spectral grid parameters
-        self.add('fov', value=retrieval.fov, min=0.01, max=0.1, vary=retrieval.fit_fov, target='fov' in targets)
+        self.add('fov', value=retrieval.fov, min=0.01, max=0.15, vary=retrieval.fit_fov, target='fov' in targets)
         self.add('max_opd', value=retrieval.max_opd, min=retrieval.max_opd * 0.5, max=retrieval.max_opd * 1.2,
                  vary=retrieval.fit_max_opd, target='max_opd' in targets)
         self.add('nu_shift', value=retrieval.nu_shift, min=-1.0, max=+1.0, vary=retrieval.fit_shift)
@@ -134,13 +142,14 @@ class Parameters(OrderedDict):
 
         # Add the special parameters for layer fits
         if retrieval.type == 'layer':
-            self.add('source_temp', value=retrieval.source_temp, min=800, max=5000, vary=retrieval.fit_source_temp)
-            self.add('gas_temp', value=geometry.plume_temp, min=300, max=800, vary=retrieval.fit_gas_temp,
+            self.add('source_temp', value=retrieval.source_temp, vary=retrieval.fit_source_temp,
+                     target=retrieval.fit_source_temp)
+            self.add('gas_temp', value=geometry.plume_temp, min=gas_temps[0], max=gas_temps[1], vary=fit['fit_gas_temp'],
                      target='gas_temp' in targets)
-            self.add('gas_temp2', value=300, min=geometry.atm_temp, max=500, vary=retrieval.dual_temp)
-            # self.add('gasE_temp', value=geometry.plume_temp, min=300, max=800, vary=retrieval.model_gas_emission)
-            self.add('E_frac', value=1.0, min=0.0, max=2.0, vary=retrieval.model_gas_emission,
-                     target='gas_temp' in targets and retrieval.model_gas_emission)
+            self.add('atm_temp', value=geometry.atm_temp, min=atm_temps[0], max=atm_temps[1], vary=fit['fit_atm_temp'],
+                     target='atm_temp' in targets)
+            self.add('gasE_temp', value=geometry.plume_temp, min=gas_temps[0], max=gas_temps[1], vary=fit['model_gas_emission'],
+                     target='gas_temp' in targets and fit['model_gas_emission'])
 
         # Add the special parameters for emission fits
         if retrieval.type == 'emission':
@@ -493,6 +502,7 @@ class Retrieval(object):
                  use_Babs_aero=True,
                  model_gas_emission=False,
                  fit_gas_temp=False,
+                 fit_atm_temp=False,
                  dual_temp=False,
                  fit_source_temp=False,
                  source_temp=1000,
@@ -553,6 +563,7 @@ class Retrieval(object):
             self.subtract_self = subtract_self
             self.no_gas = no_gas
             self.fit_gas_temp = fit_gas_temp
+            self.fit_atm_temp = fit_atm_temp
             self.dual_temp = dual_temp
             self.model_gas_emission = model_gas_emission
             self.fit_source_temp = fit_source_temp

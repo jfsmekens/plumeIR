@@ -11,7 +11,7 @@
 
 data_dir	:	/Users/jfsmekens/Documents/data/2021-08-11/4scans/
 
-filter_files	:	True			# Set to true if you want to keep only some spectra	()
+filter_files	:	False			# Set to true if you want to keep only some spectra	()
 filter_string	:	vent			# Only keep spectra with this string in the name	()
 filter_ext	:	None			# Only keep files with this extension			()
 max_spec	:	5000			# Maximum number of spectra				()
@@ -57,8 +57,9 @@ use_bounds	: 	True			# Use bounds for fits					()
 fit_size_aero	:	True			# Fit size of aerosols?					()
 use_Babs_aero	: 	True			# Use Babs instead of Text for aerosols 		()
 
-# For layer fits
-fit_gas_temp	:	True			# Fit temperature of the gas				()
+# For layer fits 
+fit_gas_temp	:	False			# Fit temperature of the volcanic gas				()
+fit_atm_temp	:	True			# Fit temperature of the volcanic gas				()
 model_gas_emission	:	False		# Model the relative emission of the hot gas		()
 fit_source_temp	:	False			# Fit the source temperature?				(Uses a normalised Planck curve in forward model)
 source_temp	:	1500			# A priori source temperature	[K]			()
@@ -83,8 +84,8 @@ E_file		:	None			# File containing the emissivity spectrum of the source	(Defaul
 
 # Inform fit with data from previous run
 force_param	:	None			# Force the value of a gas from an existing fit		()
-seed_param	:	None			# Use value from an existing fit as initial condition	()
-df_dir		:	/Users/jfsmekens/Documents/data/2021-08-11/IMO/fitResults_231026_160108_allGas_fitTemp/
+seed_param	:	None		# Use value from an existing fit as initial condition	()
+df_dir		:	/Users/jfsmekens/Documents/data/2021-08-11/4scans/TempSensitivity5/fitResults_240227_153814_allGas_fitTemp
 use_residual	:	False			# Include an average residual from a previous fit?	()
 res_dir		:	/Users/jfsmekens/Documents/data/2021-08-11/4scans/fitResults_230913_130115
 
@@ -107,8 +108,11 @@ offset		: 	0			# A priori zero offset 		[a.u. or K]		()
 
 fit		:	False			# Use this fit?						()
 fit_window	:	750, 1250		# Fit window			[cm-1]			()
-atm_gases	:	H2O, CO2, N2O, CH4		# List of atmospheric gases			()
+atm_gases	:	H2O, CO2, N2O, CH4	# List of atmospheric gases				()
+fit_atm_temp	:	False			# Fit temperature of the atmospheric gas		()
 plume_gases	:	SO2			# List of plume gases					()
+fit_gas_temp	:	True			# Fit temperature of the volcanic gas			()
+model_gas_emission	:	False		# Model the relative emission of the hot gas		()
 plume_aero	: 	H2SO4, WATER			# List of plume aerosols			()
 targets		:	CO2, H2O, SO2, H2SO4, WATER, gas_temp		# Target species			()
 polydeg		:	3
@@ -122,9 +126,12 @@ polydeg		:	3
 fit		:	True			# Use this fit?						()
 fit_window	:	2020, 2150		# Fit window			[cm-1]			()
 atm_gases	:	N2O, H2O, CO2		# List of atmospheric gases				()
-plume_gases	:	CO, OCS			# List of plume gases					()
+fit_atm_temp	:	True			# Fit temperature of the atmospheric gas		()
+plume_gases	:	CO			# List of plume gases					()
+fit_gas_temp	:	True			# Fit temperature of the volcanic gas			()
+model_gas_emission	:	True		# Model the relative emission of the hot gas		()
 plume_aero	: 	None			# List of plume aerosols				()
-targets		:	H2O, CO2, CO, OCS		# Target species					()
+targets		:	H2O, CO2, CO, atm_temp		# Target species					()
 polydeg		:	3
 
 
@@ -137,9 +144,12 @@ polydeg		:	3
 fit		:	False			# Use this fit?						()
 fit_window	:	2450, 2550		# Fit window			[cm-1]			()
 atm_gases	:	H2O, N2O, CH4		# List of atmospheric gases				()
+fit_atm_temp	:	False			# Fit temperature of the atmospheric gas		()
 plume_gases	:	SO2			# List of plume gases					()
+fit_gas_temp	:	False			# Fit temperature of the volcanic gas			()
+model_gas_emission	:	False		# Model the relative emission of the hot gas		()
 plume_aero	: 	None			# List of plume aerosols				()
-targets		:	SO2, gas_temp		# Target species					()
+targets		:	SO2			# Target species					()
 polydeg		:	3
 
 
@@ -152,7 +162,10 @@ polydeg		:	3
 fit		:	False			# Use this fit?						()
 fit_window	:	2690, 2830		# Fit window			[cm-1]			()
 atm_gases	:	H2O, N2O, CH4		# List of atmospheric gases				()
+fit_atm_temp	:	False			# Fit temperature of the atmospheric gas		()
 plume_gases	:	HCl			# List of plume gases					()
+fit_gas_temp	:	False			# Fit temperature of the volcanic gas			()
+model_gas_emission	:	False		# Model the relative emission of the hot gas		()
 plume_aero	: 	None			# List of plume aerosols				()
 targets		:	HCl			# Target species					()
 polydeg		:	3
@@ -167,7 +180,10 @@ polydeg		:	3
 fit		:	False			# Use this fit?						()
 fit_window	:	4020, 4060		# Fit window			[cm-1]			()
 atm_gases	:	H2O			# List of atmospheric gases				()
+fit_atm_temp	:	False			# Fit temperature of the atmospheric gas		()
 plume_gases	:	HF			# List of plume gases					()
+fit_gas_temp	:	False			# Fit temperature of the volcanic gas			()
+model_gas_emission	:	False		# Model the relative emission of the hot gas		()
 plume_aero	: 	None			# List of plume aerosols				()
 targets		:	HF			# Target species					()
 polydeg		:	3
@@ -179,9 +195,13 @@ polydeg		:	3
 *FIT5			# Fit for NH3
 
 fit		:	False			# Use this fit?						()
-fit_window	:	940, 980			# Fit window			[cm-1]		()
-atm_gases	:	H2O, CO2			# List of atmospheric gases			()
+fit_window	:	940, 980		# Fit window			[cm-1]			()
+atm_gases	:	H2O, CO2		# List of atmospheric gases				()
+fit_atm_temp	:	True			# Fit temperature of the atmospheric gas		()
 plume_gases	:	NH3			# List of plume gases					()
+fit_gas_temp	:	False			# Fit temperature of the volcanic gas			()
+model_gas_emission	:	False		# Model the relative emission of the hot gas		()
 plume_aero	: 	None			# List of plume aerosols				()
 targets		:	NH3			# Target species					()
 polydeg		:	3
+

@@ -12,7 +12,7 @@ midac_extensions = ['spc', 'sbm', 'ifg', 'sb', 'abs']
 invalid_extensions = ['pkl', 'csv', 'txt', 'ini', 'dat', 'xls', 'xlsx', 'doc', 'docx', 'jpg', 'png']
 
 # Gas species in RFM + those extracted from NIST
-rfm_gases = ['H2O', 'CO2', 'SO2', 'CO', 'NO', 'O3', 'N2O', 'NO2', 'NH3', 'HNO3', 'CH4', 'O2', 'HCl', 'HF', 'HBr',
+rfm_gases = ['H2O', 'CO2', 'SO2', 'CO', 'OCS', 'NO', 'O3', 'N2O', 'NO2', 'NH3', 'HNO3', 'CH4', 'O2', 'HCl', 'HF', 'HBr',
              'HI', 'H2S', 'N2', 'ClO', 'SF6', 'SO3']
 special_gases = ['SiF4']
 possible_gases = rfm_gases + special_gases
@@ -20,12 +20,14 @@ possible_gases = rfm_gases + special_gases
 possible_aeros = ['H2SO4', 'ASH', 'WATER']
 
 # Interesting Ratios: If any combination of 2 targets makes one of those ratios, it will be plotted
-interesting_ratios = ['CO2:SO2', 'H2O:SO2', 'H2O:CO2', 'CO:SO2', 'SO2:HCl', 'SO2:HF', 'SO2:H2S', 'SO2:SO3',
-                      'SO2:SiF4', 'HCl:HF', 'SO2:H2SO4', 'SO4:SO2', 'H2SO4:ASH', 'H2O:WATER', 'N/A:N/A']
+interesting_ratios = ['CO2:SO2', 'H2O:SO2', 'H2O:CO2', 'SO2:CO', 'SO2:HCl', 'SO2:HF', 'SO2:H2S', 'SO2:SO3', 'CO2:CO',
+                      'OCS:CO', 'SO2:SiF4', 'HCl:HF', 'SO2:H2SO4', 'SO2:SO4', 'H2SO4:ASH', 'H2O:WATER', 'N/A:N/A']
 
 # Continuum Gases: gases in this list are treated differently when creating a reference
 #       (include gases with continuum and/or line mixing issues)
-continuum_gases = ['H2O', 'CO2']
+continuum_gases = []
+atm_temps = [200, 400]
+gas_temps = [200, 800]
 
 # Available Apodization functions for the ILS
 apod_types = ['Boxcar', 'Uniform', 'Triangular', 'Blackman-Harris', 'Happ-Genzel', 'Hamming', 'Lorenz', 'Gaussian',
@@ -43,6 +45,7 @@ weights = {'H2O': 18.01528,
            'HCl': 36.458,
            'HF': 20.01,
            'CO': 28.01,
+           'OCS': 60.0751,
            'NH3': 17.031,
            'SiF4': 104.0791,
            'H2S': 34.1,
@@ -61,6 +64,7 @@ plot_colors = {'H2O_sc': 'lightblue',
                'SO2': 'tab:red',
                'SO3': 'tab:orange',
                'CO': 'maroon',
+               'OCS': 'goldenrod',
                'HCl': 'cyan',
                'HF': 'magenta',
                'NH3': 'yellow',
@@ -69,7 +73,10 @@ plot_colors = {'H2O_sc': 'lightblue',
                'H2SO4': 'tab:green',
                'ASH': 'tab:grey',
                'WATER': 'deepskyblue',
+               'source_temp': 'r',
                'gas_temp': 'orange',
+               'atm_temp': 'skyblue',
+               'gasE_temp': 'darkorange',
                'E_frac': 'k',
                'fov': 'k',
                'max_opd': 'k',
@@ -94,6 +101,7 @@ dark_colors = {'H2O_sc': 'lightblue',
                'CH4': 'darkviolet',
                'SO2': 'tab:red',
                'CO': 'maroon',
+               'OCS': 'goldenrod',
                'HCl': 'cyan',
                'HF': 'magenta',
                'NH3': 'yellow',
@@ -102,7 +110,10 @@ dark_colors = {'H2O_sc': 'lightblue',
                'H2SO4': 'tab:green',
                'ASH': 'tab:grey',
                'WATER': 'deepskyblue',
+               'source_temp': 'r',
                'gas_temp': 'orange',
+               'atm_temp': 'skyblue',
+               'gasE_temp': 'darkorange',
                'fov': 'w',
                'max_opd': 'w',
                'R2': 'w',
@@ -148,19 +159,23 @@ pretty_names = {'H2O': '$H_2O$',
                 'N2O': '$N_2O$',
                 'CH4': '$CH_4$',
                 'CO': '$CO$',
+                'OCS': '$OCS$',
                 'HCl': '$HCl$',
                 'HF': '$HF$',
                 'SiF4': '$SiF_4$',
                 'H2S': '$H_2S$',
-                'SO4': '$SO_4$',
-                'H2SO4': '$SO_4$ $aerosol$',
+                'SO4': '${SO_4}^{2-}$',
+                'H2SO4': '${SO_4}^{2-}$ $aerosol$',
                 'ASH': '$ash$',
                 'WATER': '$H_2O$ $aerosol$',
-                'ICE': '$ICE$',
+                'ICE': '$ice$',
                 'time': 'Local Time',
                 'R2': '$R^2$',
                 'RMSE': 'RMS error',
+                'source_temp': '$T_{source}$',
                 'gas_temp': '$T_{gas}$',
+                'atm_temp': '$T_{atm}$',
+                'gasE_temp': '$T_{gas}(E)$',
                 'E_frac': r'$X{\epsilon}$',
                 'fov': '$FOV$',
                 'max_opd': '$OPD_{max}$',
@@ -183,7 +198,7 @@ logofont = {'family': 'Palatino',
             'weight': 'bold',
             'style': 'italic',
             'size': 18}
-versiontext = 'v0.7'
+versiontext = 'v2.0'
 versionfont = {'family': 'Palatino',
                'color':  'tab:red',
                'weight': 'normal',

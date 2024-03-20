@@ -119,9 +119,9 @@ def makePSD(mean=1.0, sigma=1.5, n=50, fname=None):
     return out
 
 # ======================================================================================================================
-#                                   Make custom cross-sections for odd gases
+#                                   Make custom cross-sections for gases
 # ======================================================================================================================
-def makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, species='sif4'):
+def makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, species=None):
     """
     Use this function to make cross-sections for gases not in the Hitran database. Each gas is manually added in the
         ./xsec/ folder as a JCAMP-JDX file (.jdx) taken from the NIST website. Reference experiment environemental data
@@ -131,75 +131,46 @@ def makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, specie
 
     :param wn_start:  Lower bound of the frequency range for x-axis                           [cm^-1]
     :param wn_stop:    Higher bound of the frequency range for x-axis                          [cm^-1]
-    :param nper_wn:    Resolution of the frequency range for x-axis                            [{cm^-1}^-1]
+    :param nper_wn:     Resolution of the frequency range for x-axis                            [{cm^-1}^-1]
     :param conc:        Concentration for the cross-section                                     [ppm]
     :param temp:        Temperature                                                             [K]
     :param pres:        Pressure                                                                [mbar]
     :param species:     Gas formula (case insensitive)                                          String
     :return: Dictionary with structure:
-                ['wn']:           Wavenumber x-axis                                           [cm^-1]
+                ['wn']:             Wavenumber x-axis                                           [cm^-1]
                 ['Bext']:           Extinction coefficients                                     [m^-1]
-                ['conc']:           Gas concenntration used to calculate cross-section          [ppm]
+                ['conc']:           Gas concentration used to calculate cross-section           [ppm]
+                ['temp']:           Temperature                                                 [K]
+                ['pres']:           Pressure                                                    [mb]
+                ['species']         Gas species
     """
 
     # Create wavenumber x-axis
     npts = int((wn_stop - wn_start) * nper_wn) + 1
-    wn = np.linspace(wn_start, wn_stop, npts)
+    wave = np.linspace(wn_start, wn_stop, npts)
 
-    # If no species is given
-    if species is None:
-        raise ValueError('Please supply a species name from the following: %s' % possible_gases)
+    # ---------------------------------------------------------------------
+    #                  Special case for gases not in RFM
+    # ---------------------------------------------------------------------
+    if species.lower() == 'sif4':
 
-    elif species in special_gases:
+        # Read in spectrum from xsec csv file
+        fname = './xsec/SIF4_xsec.csv'
+        data = pd.read_csv(fname)
+        xsec = np.interp(wave, data['wn'], data['xsec']) / 1e4  # in [m^2.molec^-1]
 
-        # ---------------------------------------------------------------------
-        # Read in spectrum from JDX file
-        # ---------------------------------------------------------------------
-        # Read the absorbance data (from the NIST webbook in JCAMP-JDX format)
-        fname = './xsec/GAS_%s.jdx' % species.lower()
-        data = jcamp.JCAMP_reader(fname)
-
-        # Extract spectrum and sample onto wavenumber grid
-        if data['yunits'] == 'ABSORBANCE':
-            A = np.interp(wn, data['x'], data['y'])
-        elif data['yunits'] == 'TRANSMITTANCE':
-            A = 1 - np.interp(wn, data['x'], data['y'])
-        elif 'micromol/mol' in data['yunits']:
-            xsec = np.interp(wn, data['x'], data['y'])
-
-        # ---------------------------------------------------------------------
-        # Determine experiment conditions and calculate cross-section
-        # ---------------------------------------------------------------------
-        if not 'micromol/mol' in data['yunits']:
-            R = 8.31446261815324  # R constant [in m^3⋅Pa⋅K^−1⋅mol^−1]
-
-            # Establish conditions in which measurement was made
-            if species.lower() == 'sif4':
-                pres_ref = 65328  # Partial pressure of target gas from NIST webbook entry (490 mmHg), converted to [Pa]
-                temp_ref = 293.15  # "Room" temperature for NIST experiments [in K]
-                Lref = 0.05  # Standard path length for NIST experiments [in m]
-            else:
-                raise ValueError('Gas species %s currently not supported. '
-                                 'You may add the JDX file for the desired gas in the ./xsec/ folder '
-                                 'and update the reference pressure manually in the source code of the makeGasXSC() functionn'
-                                 'in ./plumeIR_dev/customXSC.py' % species.upper())
-
-            # Number density of target gas in experiment
-            Nref = pres_ref / (R * temp_ref)    # in [mol.m^-3]
-
-            # Derive cross-section
-            xsec = A / Lref / Nref  # [in m^2.mol^-1]
-
-        # ---------------------------------------------------------------------
-        # Calculate extinction coefficients for desired environment (conc, P, T)
-        # ---------------------------------------------------------------------
         # Calculate desired number density
+        R = 8.31446261815324                        # R constant [in m^3⋅Pa⋅K^−1⋅mol^−1]
+        avo = 6.02214076e23                         # Avogadro number
         N = conc * 1e-6 * pres * 1e2 / (R * temp)   # [in mol.m^-3]
+        N = N * avo                                 # [in molec.m^-3]
 
         # Get extinction coefficient
-        Bext = xsec * N     # [in m^-1]
+        Bext = xsec * N  # [in m^-1]
 
-
+    # ---------------------------------------------------------------------
+    #                  All other gases handled with RFM
+    # ---------------------------------------------------------------------
     elif species in rfm_gases:
 
         # Write RFM driver and run
@@ -219,10 +190,10 @@ def makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, specie
     out['conc'] = conc
     out['temp'] = temp
     out['pres'] = pres
-    out['wn'] = wn
+    out['wn'] = wave
     out['Bext'] = Bext
 
-    return out
+    return out 
 
 
 # ======================================================================================================================

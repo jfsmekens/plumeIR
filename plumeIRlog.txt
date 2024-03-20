@@ -1,0 +1,9 @@
+15:40:23 - ########## Retrieval run initiated - plumeIR v0.7 ###########
+15:40:23 - User supplied config file: ./plumeIRconfig_layer.txt
+15:40:23 - Reading fit parameters from config file
+15:40:23 - Working in: /Users/jfsmekens/Documents/data/2021-08-11/4scans/
+15:40:23 - Found 418 spectra, sorted by name
+15:40:23 - Generating self emission background
+15:40:23 - Source assumed to be black/gray body with uniform emissivity
+15:40:23 - ########## Reference cross-sections for FIT1 - type LAYER ##########
+15:40:23 - Atmospheric gases ['N2O', 'H2O', 'CO2'] at 284 K...

@@ -37,14 +37,14 @@ spacing = 1.0               # New spectral sampling [in cm^-1]
 
 # Visual outputs during run
 # mpl.use("Qt5agg")           # Use Qt to handle the displays (slower)
-dark_mode = False            # Dark background and colors
+dark_mode = False           # Dark background and colors
 force_reference = False     # Force a rerun of the reference file even if it already exists
 plot_reference = False      # Plot spectral reference for each fit?
 plot_analysis = True        # Display results in the Analysis canvas?
 scroll = 50                 # How many spectra to display at any one time
 plot_mass = False           # Plot all ratios as mass ratios?
 show_error = False          # Plot errorbars on the ratio_plots
-regress_type = 'theil'        # Type of linear regression to be used ('siegel' - 'theil' - 'odr')
+regress_type = 'odr'        # Type of linear regression to be used ('siegel' - 'theil' - 'odr')
 fit_error = True            # Consider errors in the linear regression for ratios (only works with ODR)
 
 # Save options
@@ -80,7 +80,7 @@ logger.addHandler(handler2)
 # ======================================================================================================================
 logger.info('########## Retrieval run initiated - %s %s ###########' % (logotext, versiontext))
 # Can be initiated by pointing to a file directly
-config_name = './plumeIRconfig_layer.txt'     # Where to get the config from
+config_name = './plumeIRconfig_emission.txt'     # Where to get the config from
 # config_name = None
 if config_name is not None:
     logger.info('User supplied config file: %s' % config_name)
@@ -226,16 +226,6 @@ for i, fname in enumerate(config['DATA']['spec_list']):
         results[n] = analysers[n].fitSpectrum(spectrum, update_params=retrieval.update_params,
                        use_bounds=retrieval.use_bounds)
 
-        # if analysers[n].master:
-        #     update = [name for name, p in analysers[n].params.items() if p.target]
-        #     for k, a in enumerate(analysers):
-        #         if k != n:
-        #             for name, p in analysers[k].params.items():
-        #                 if name in update:
-        #                     a.params[name].value = analysers[n].params[name].value
-        #                     a.params[name].vary = False
-        #                     print('Updating fit %i for %s: %.2f' % (k, name, analysers[n].params[name].fit_val))
-
         # --- 2: Read out parameters ---
         row_n = [fname.split('/')[-1], dtime]   # Individual row
 
@@ -290,6 +280,7 @@ for i, fname in enumerate(config['DATA']['spec_list']):
     # Assign summary row to Dataframe
     df_sum.loc[i] = row_all
 
+    # Keep track pof the number of failed fits (if it only fails in one window, it will still be counted)
     if not results[0].nerr:
         fails += 1
 
@@ -299,6 +290,7 @@ for i, fname in enumerate(config['DATA']['spec_list']):
     if plot_analysis:
             updateAnalysisCanvas(analysis_canvas, i, config, results, df_sum, geometry, save=save_frames, outdir=outdir,
                                scroll=scroll, plot_mass=plot_mass, show_error=show_error, regress=regress_type, fit_error=fit_error)
+
     # Set the postfix with info about the retrieval
     postfix = []
     postfix.append('R2: %.3f' % df_sum['MIN R2'][i])
@@ -309,8 +301,10 @@ for i, fname in enumerate(config['DATA']['spec_list']):
         postfix.append('Tsource: %.0f K' % df_sum['source_temp'][i])
     if 'gas_temp' in df_sum.keys():
         postfix.append('Tgas: %.0f K' % df_sum['gas_temp'][i])
-    if 'gas_temp2' in df_sum.keys():
-        postfix.append('Tgas2: %.0f K' % df_sum['gas_temp2'][i])
+    if 'gasE_temp' in df_sum.keys():
+        postfix.append('Tgas(E): %.0f K' % df_sum['gasE_temp'][i])
+    if 'atm_temp' in df_sum.keys():
+        postfix.append('Tatm: %.0f K' % df_sum['atm_temp'][i])
     if 'E_frac' in df_sum.keys():
         postfix.append('E_frac: %.2f' % df_sum['E_frac'][i])
     if 'fov' in df_sum.keys():

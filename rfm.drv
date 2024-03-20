@@ -1,0 +1,31 @@
+! RFM driver table for radiance calculation
+
+*HDR
+Single homogeneous layer
+
+*FLG
+HOM OPT SHH
+
+*SPC
+1970.000000	2200.000000	25.000000
+
+*GAS
+N2O
+
+*ATM
+TEM=298.000000
+PRE=1013.000000
+N2O=0.320000
+
+*LEN
+0.100000
+
+*HIT
+./RFM/Hitran/hitran_2020.bin
+
+*OUT
+OUTDIR = ./RFM/output/
+OPTFIL = opt*.out
+PRFFIL = ./atm/prf.atm
+
+*END

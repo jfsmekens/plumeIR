@@ -28,8 +28,11 @@ from atmosphere import *
 from customXSC import *
 from spectra import read_spectrum
 from initialise import readConfig, readStandard
-from constants import plot_colors, pretty_names, apod_types
+from constants import plot_colors, pretty_names, apod_types, atm_temps, gas_temps
 from parameters import Retrieval
+
+gas_temps = np.linspace(gas_temps[0], gas_temps[1], 21)   # Range of temperatures for the gas
+atm_temps = np.linspace(atm_temps[0], atm_temps[1], 21)   # Range of temperatures for the gas
 
 logger = logging.getLogger(__name__)
 continuum_gases = ['H2O']
@@ -261,7 +264,7 @@ class Analyser(object):
                                  % self.retrieval.df_dir)
             elif len(flist) == 1:
                 df = pd.read_csv(flist[0])
-                if all(['%s_scd [molec.cm^-2]' % x in df.columns or x in df.columns for x in self.from_df]):
+                if all([('%s_val' % x in df.columns for x in self.from_df) or (y in df.columns for y in self.from_df)]):
                     self.df_dir = df
                 else:
                     raise IOError('Supplied fitResult does not contain all parameters')
@@ -307,34 +310,35 @@ class Analyser(object):
                 self.clear_drift = retrieval.clear_drift
                 self.makeClear()
 
-        # ---------------------------------------------------------------------
-        # Extract self emission background
-        # ---------------------------------------------------------------------
-        if self.subtract_self:
-            self.makeSelfEmission()
+        if self.type == 'layer':
+            # ---------------------------------------------------------------------
+            # Extract self emission background
+            # ---------------------------------------------------------------------
+            if self.subtract_self:
+                self.makeSelfEmission()
 
-        # ---------------------------------------------------------------------
-        # Extract "no gas" spectrum
-        # ---------------------------------------------------------------------
-        if self.no_gas:
-            self.makeNoGas()
+            # ---------------------------------------------------------------------
+            # Extract "no gas" spectrum
+            # ---------------------------------------------------------------------
+            if self.no_gas:
+                self.makeNoGas()
 
-        # ---------------------------------------------------------------------
-        # Make Emissivity spectrum
-        # ---------------------------------------------------------------------
-        if self.use_source_E:
-            self.makeSourceEmissivity()
-        else:
-            logger.info('Source assumed to be black/gray body with uniform emissivity')
-            self.E_model = 1
+            # ---------------------------------------------------------------------
+            # Make Emissivity spectrum
+            # ---------------------------------------------------------------------
+            if self.use_source_E:
+                self.makeSourceEmissivity()
+            else:
+                logger.info('Source assumed to be black/gray body with uniform emissivity')
+                self.E_model = 1
 
-        # ---------------------------------------------------------------------
-        # Generate average residual from previous fit
-        # ---------------------------------------------------------------------
-        if self.use_residual:
-            self.makeResidual()
-        else:
-            self.res_model = 1
+            # ---------------------------------------------------------------------
+            # Generate average residual from previous fit
+            # ---------------------------------------------------------------------
+            if self.use_residual:
+                self.makeResidual()
+            else:
+                self.res_model = 1
 
         # ---------------------------------------------------------------------
         # Generate reference cross sections
@@ -367,7 +371,7 @@ class Analyser(object):
         # Read in Standard quantities for cross-sections
         std = readStandard()
         scalings = np.linspace(0, 4, 21)    # 0-4 scalings for continuum gases
-        temps = np.linspace(200, 800, 21)   # Range of temperatures for the gas
+
 
         # Create empty structure to store reference
         ref = {}
@@ -387,7 +391,8 @@ class Analyser(object):
                      "Atmospheric temperature: %i K\n" \
                      "Atmospheric pressure: %i mbar\n" \
                      "Plume temperature: %i K\n" \
-                     "Gas Temp dependence: %s\n" \
+                     "Gas Temp range: %i-%i K\n" \
+                     "Atm Temp range: %i-%i K\n" \
                      "Plume pressure: %i mbar\n" \
                      "Fit window: %i - %i cm^-1\n" \
                      "Spectral resolution: %.3f cm^-1\n" \
@@ -399,7 +404,8 @@ class Analyser(object):
                         self.geometry.atm_temp,
                         self.geometry.atm_pres,
                         self.geometry.plume_temp,
-                        self.retrieval.fit_gas_temp,
+                        gas_temps.min(), gas_temps.max(),
+                        atm_temps.min(), atm_temps.max(),
                         self.geometry.plume_pres,
                         self.wn_start, self.wn_stop,
                         self.model_spacing,
@@ -449,14 +455,20 @@ class Analyser(object):
                 ref['plume']['ref_column'] = {}
 
                 # ----- 1: Atmospheric gases -----
-                logger.info('Atmospheric gases %s at %i K...' % (self.params.atmGasList(), self.geometry.atm_temp))
+                if self.retrieval.fit_atm_temp:
+                    logger.info('Atmospheric gases %s in range %i - %i K...' % (self.params.atmGasList(), atm_temps.min(), atm_temps.max()))
+                else:
+                    logger.info('Atmospheric gases %s at %i K...' % (self.params.atmGasList(), self.geometry.atm_temp))
                 ref['atm']['OD_calib'] = {}
 
                 # Get the list of gases and create a progress bar
                 atm_gases = self.params.atmGasList()
                 n_gas = len(atm_gases)
                 n_continuum = len([gas for gas in atm_gases if gas in continuum_gases])
-                pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)  # Progress bar
+                if self.retrieval.fit_atm_temp:
+                    pbar = tqdm(total=n_continuum * len(scalings) + (n_gas - n_continuum) * len(atm_temps))  # Progress bar
+                else:
+                    pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)
 
                 # Loop over gases
                 for i, gas in enumerate(atm_gases):
@@ -465,8 +477,9 @@ class Analyser(object):
 
                     # Assign reference column amount and find concentration based on pathlength
                     ref_conc = std[gas]['conc']
-                    ref['atm']['ref_column'][gas] = ppm2scd(ref_conc, self.geometry.pathlength,
+                    ref_column = ppm2scd(ref_conc, self.geometry.pathlength,
                                                             temp=self.geometry.atm_temp, pres=self.geometry.atm_pres)
+                    ref['atm']['ref_column'][gas] = ref_column
 
                     # If gas is a continuum gas, use scalings to create a calibration polynomial
                     if gas in continuum_gases:
@@ -482,18 +495,31 @@ class Analyser(object):
                             pbar.update()
                         ref['atm']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
 
-                    # Otherwise just make one cross-section with a reference quantity
+                    # Otherwise create a temperature calibration
                     else:
+                        ODs = np.empty([len(self.model_grid), len(atm_temps)], dtype=float)
+                        for j, t in enumerate(atm_temps):
+                            pbar.set_description('%s @ %i K' % (gas, t))  # Change pbar message
+                            conc = scd2ppm(ref_column, self.geometry.pathlength, temp=t,
+                                           pres=self.geometry.atm_pres)
+                            # Generate OD cross-section
+                            ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=conc,
+                                                   species=gas, temp=t, pres=self.geometry.plume_pres)[
+                                            'Bext'] * self.geometry.pathlength * 1e3
+                            pbar.update()
+
+                        ref['atm']['OD_calib'][gas] = np.polyfit(atm_temps, ODs.T, 10)
                         ref['atm'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
-                                                     species=gas)['Bext'] * self.geometry.pathlength * 1e3
-                        pbar.update()
+                                                       species=gas, temp=self.geometry.plume_temp,
+                                                       pres=self.geometry.plume_pres)[
+                                                'Bext'] * self.geometry.pathlength * 1e3
                     pbar.set_description('Done!')
                 pbar.close()
                 logger.info('...Done!')
 
                 # ----- 2: Plume gases -----
                 if self.retrieval.fit_gas_temp:
-                    logger.info('Plume gases %s in range %i - %i K...' % (self.params.plumeGasList(), temps.min(), temps.max()))
+                    logger.info('Plume gases %s in range %i - %i K...' % (self.params.plumeGasList(), gas_temps.min(), gas_temps.max()))
                 else:
                     logger.info('Plume gases %s at %i K...' % (self.params.plumeGasList(), self.geometry.plume_temp))
                 ref['plume']['OD_calib'] = {}
@@ -503,7 +529,7 @@ class Analyser(object):
                 n_gas = len(plume_gases)
                 n_continuum = len([gas for gas in plume_gases if gas in continuum_gases])
                 if self.retrieval.fit_gas_temp:
-                    pbar = tqdm(total=n_continuum * len(scalings) + (n_gas - n_continuum) * len(temps))  # Progress bar
+                    pbar = tqdm(total=n_continuum * len(scalings) + (n_gas - n_continuum) * len(gas_temps))  # Progress bar
                 else:
                     pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)
 
@@ -534,10 +560,10 @@ class Analyser(object):
 
                         ref['plume']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
 
-                    elif self.retrieval.fit_gas_temp:
-
-                        ODs = np.empty([len(self.model_grid), len(temps)], dtype=float)
-                        for j, t in enumerate(temps):
+                    # Otherwise create a temperature calibration
+                    else:
+                        ODs = np.empty([len(self.model_grid), len(gas_temps)], dtype=float)
+                        for j, t in enumerate(gas_temps):
                             pbar.set_description('%s @ %i K' % (gas, t))  # Change pbar message
                             conc = scd2ppm(ref_column, self.geometry.plume_thickness, temp=t, pres=self.geometry.plume_pres)
                             # Generate OD cross-section
@@ -545,15 +571,11 @@ class Analyser(object):
                                                    species=gas, temp=t, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
                             pbar.update()
 
-                        ref['plume']['OD_calib'][gas] = np.polyfit(temps, ODs.T, 10)
+                        ref['plume']['OD_calib'][gas] = np.polyfit(gas_temps, ODs.T, 10)
                         ref['plume'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
                                                        species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
 
-                    # Otherwise just make one cross-section with a reference quantity
-                    else:
-                        ref['plume'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
-                                                           species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
-                        pbar.update()
+                    pbar.update()
                     pbar.set_description('Done!')
                 pbar.close()
                 logger.info('...Done!')
@@ -1655,7 +1677,7 @@ class Analyser(object):
             y = y - bkg
 
         # Isolate plume transmittance with no gas spectrum (Active geometry only)
-        if self.no_gas:
+        if self.type == 'layer' and self.no_gas:
             try:
                 timestamp = datetime.timestamp(spectrum.dtime)
                 nogas = np.polyval(self.nogas_poly, timestamp) - bkg
@@ -1713,10 +1735,10 @@ class Analyser(object):
             else:
                 pass
 
-        if self.use_source_E:
+        if self.type == 'layer' and self.use_source_E:
             self.E_meas = griddata(self.model_grid, self.E_model, x)
 
-        if self.use_residual:
+        if self.type == 'layer' and self.use_residual:
             self.res_meas = griddata(self.model_grid, self.res_model, x)
 
         new_spectrum.update(spectrum=np.row_stack([x, y]))
@@ -1828,61 +1850,54 @@ class Analyser(object):
             bg_poly = 1
         else:
             bg_poly = np.polyval(poly_object, self.model_grid)
-
+        
         # Calculate the gas optical depth spectra for Atmospheric Gases
         OD_atm = 0
         atm_gases = [params[n].name for n in p if params[n].atm_gas]
         for gas in atm_gases:
             if gas in continuum_gases:
-                OD_atm = OD_atm + np.polyval(self.reference['atm']['OD_calib'][gas], p[gas])
+                OD_gas = np.polyval(self.reference['atm']['OD_calib'][gas], p[gas])
             else:
-                OD_atm = OD_atm + p[gas] * self.reference['atm'][gas]
-        T_atm = np.exp(-OD_atm)
+                OD_gas = p[gas] * np.polyval(self.reference['atm']['OD_calib'][gas], p['atm_temp'])
+            OD_atm = OD_atm + OD_gas
 
         # Calculate the gas optical depth spectra for Plume Gases
         OD_plume = 0
+        OD_plumeE = 0
         plume_gases = [params[n].name for n in p if params[n].plume_gas]
         for gas in plume_gases:
             if gas in continuum_gases:
-                OD_plume = OD_plume + np.polyval(self.reference['plume']['OD_calib'][gas], p[gas])
-            elif self.retrieval.fit_gas_temp:
-                if self.retrieval.dual_temp:
-                    for i in range(10):
-                        t = self.geometry.atm_temp + (i + 1) * (p['gas_temp'] - p['gas_temp2']) / 10
-                        OD_plume = OD_plume + p[gas] / 10 * np.polyval(self.reference['plume']['OD_calib'][gas], t)
-                else:
-                    OD_plume = OD_plume + p[gas] * np.polyval(self.reference['plume']['OD_calib'][gas], p['gas_temp'])
+                OD_gas = np.polyval(self.reference['plume']['OD_calib'][gas], p[gas])
             else:
-                OD_plume = OD_plume + p[gas] * self.reference['plume'][gas]
+                OD_gas = p[gas] * np.polyval(self.reference['plume']['OD_calib'][gas], p['gas_temp'])
+                OD_gasE = p[gas] * np.polyval(self.reference['plume']['OD_calib'][gas], p['gasE_temp'])
+            OD_plume = OD_plume + OD_gas
+            OD_plumeE = OD_plumeE + OD_gasE
 
         # Add the optical depth spectra for Plume Aerosols
         plume_aero = [params[n].name for n in p if params[n].plume_aero]
+        OD_aeros = 0
         for aero in plume_aero:
-            OD_plume = OD_plume + p[aero] * np.polyval(self.reference['plume'][aero]['Bext'], np.log10(p[aero + '_deff']))
+            OD_aero = p[aero] * np.polyval(self.reference['plume'][aero]['Bext'], np.log10(p[aero + '_deff']))
+            OD_plume = OD_plume + OD_aero
+            OD_aeros = OD_aeros + OD_aero
 
-        # Calculate transmittance (and emissivity) of the plume
+        # Calculate transmittance (and emissivity) of both layers
+        T_atm = np.exp(-OD_atm)
         T_plume = np.exp(-OD_plume)
-        E_plume = 1 - T_plume
+        E_plume = 1 - np.exp(-OD_plumeE)
 
         # Compute model spectrum at full resolution
         if self.no_gas:
             F_raw = T_plume * T_atm * bg_poly
             if self.retrieval.model_gas_emission:
-                Bg = planck(self.model_grid, p['gas_temp']) / planck(self.model_grid, p['source_temp'])
+                Bg = planck(self.model_grid, p['gasE_temp']) / planck(self.model_grid, p['source_temp'])
                 F_raw = F_raw + Bg * E_plume * bg_poly
         else:
             F_raw = self.E_model * self.res_model * T_plume * T_atm * bg_poly
             if self.retrieval.model_gas_emission:
-                # Bp = p['hot_frac'] + planck(self.model_grid, self.geometry.atm_temp) / planck(self.model_grid, p['source_temp']) * (1 - p['hot_frac'])
-                if self.retrieval.dual_temp:
-                    Bg = 0
-                    for i in range(10):
-                        t = self.geometry.atm_temp + (i + 1) * (p['gas_temp'] - p['gas_temp2']) / 10
-                        Bg = Bg + planck(self.model_grid, t) / 10
-                    Bg = Bg / planck(self.model_grid, p['source_temp'])
-                else:
-                    Bg = planck(self.model_grid, p['gas_temp']) / planck(self.model_grid, p['source_temp'])
-                F_raw = F_raw + Bg * p['E_frac'] * E_plume * self.res_model * T_atm * bg_poly
+                Bg = planck(self.model_grid, p['gasE_temp']) / planck(self.model_grid, p['source_temp'])
+                F_raw = F_raw + Bg * E_plume * self.res_model * T_atm * bg_poly
 
         # Generate ILS and convolve
         kernel = makeILS(fov=p['fov'], nper_wn=self.nper_wn, wn=(wn.max() - wn.min()) / 2, max_opd=p['max_opd'],
@@ -2113,6 +2128,10 @@ class FitResult(object):
             self.offset = np.full(len(self.spec), np.nan)
             self.rmse = np.nan
             self.r2 = np.nan
+            # self.T = None
+
+
+
 
 
 

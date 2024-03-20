@@ -38,7 +38,7 @@ HNO3		:	0.01	:	None	:	None	:	None	:	None	:	None
 SiF4		: 	0.01	:	None	: 	None	:	None	:	None	:	None
 H2S		: 	1e-4	:	None	: 	None	:	None	:	None	:	None
 ClO		: 	1e-4	:	None	: 	None	:	None	:	None	:	None
-OCS		: 	6e-4	:	None	: 	None	:	None	:	None	:	None
+OCS		: 	1.0	:	None	: 	None	:	None	:	None	:	None
 H2CO		: 	1e-4	:	None	: 	None	:	None	:	None	:	None
 HOCl		: 	1e-4	:	None	: 	None	:	None	:	None	:	None
 HCN		:	1e-4	:	None	:	None	:	None	:	None	:	None
@@ -60,5 +60,5 @@ PH3		:	1e-4	:	None	:	None	:	None	:	None	:	None
 
 H2SO4		: 	1E-3	:    	1.0	: 	1.5	:	0.1	:	10.0	:	0.38	# composition in wt. % H2SO4
 ASH		:	1E-3	:	2.0	:	1.5	:	0.1	:	20.0	:	0.48	# composition in wt. % SiO2
-WATER		:	1E-3	:	6.0	:	1.5	:	0.1	:	10.0	:	1.0	# Water droplets
+WATER		:	1E-3	:	2.0	:	1.5	:	0.1	:	10.0	:	1.0	# Water droplets
 ICE		:	1E-3	:	2.0	:	1.5	:	0.1	:	10.0	:	1.0	# Ice droplets

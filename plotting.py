@@ -86,8 +86,10 @@ def makeAnalysisCanvas(config, dark_mode=False):
     # Define the layout of the plots
     # ---------------------------------------------------------------------
     # Open the figure
-    if config['n_fits'] >= 3 or config['n_targets'] >= 6:
+    if config['n_fits'] >= 3 or config['n_ratios'] >= 6:
         figsize = [16, 8]
+    elif config['n_fits'] == 1 and config['n_ratios'] <= 3:
+        figsize = [8, 8]
     else:
         figsize = [12, 8]
     fig = plt.figure(figsize=figsize, constrained_layout=True)
@@ -292,7 +294,7 @@ def updateAnalysisCanvas(canvas, step, config, results, dataframe, geometry, sav
     for n in range(config['n_fits']):
         l1a[n].set_data(results[n].grid, results[n].spec)
         l1b[n].set_data(results[n].grid, results[n].model)
-        l1c[n].set_data(results[n].grid, results[n].bkg)
+        # l1c[n].set_data(results[n].grid, results[n].bkg)
         l2[n].set_data(results[n].grid, results[n].res)
         leg1[n].set_title('%s: %.3f | %s: %.2f' % (pretty_names['fov'], results[n].params['fov'].fit_val,
                                                    pretty_names['max_opd'], results[n].params['max_opd'].fit_val))
@@ -355,16 +357,16 @@ def updateAnalysisCanvas(canvas, step, config, results, dataframe, geometry, sav
                     e6[n] = ax4[n].errorbar(xdata[step], ydata[step], xerr=xerr[step], yerr=yerr[step], fmt='none',
                                             color=e6[n][2][0].get_color(), elinewidth=0.5, capsize=2, capthick=0.5)
                 # Linear fit for ratio
-                if step > 10:   # Only if there are at least 10 points
+                if step > 2:   # Only if there are at least 3 points
                     try:
-                        idx = np.isfinite(xdata_all) & np.isfinite(ydata_all)   # Remove NaN values from failed fits
+                        idx = np.isfinite(xdata) & np.isfinite(ydata)   # Remove NaN values from failed fits
 
                         if regress == 'siegel':
-                            popt = siegelslopes(ydata_all[idx], x=xdata_all[idx])
+                            popt = siegelslopes(ydata[idx], x=xdata[idx])
                             perr = [0, 0]
 
                         elif regress == 'theil':
-                            m, p, mlo, mhi = theilslopes(ydata_all[idx], x=xdata_all[idx])
+                            m, p, mlo, mhi = theilslopes(ydata[idx], x=xdata[idx], method='joint')
                             popt = [m, p]
                             perr = [mhi - m, 0]
 
@@ -372,16 +374,13 @@ def updateAnalysisCanvas(canvas, step, config, results, dataframe, geometry, sav
 
                             beta0 = siegelslopes(ydata[idx], x=xdata[idx])   # First guess with Siegel
 
-                            # Determine weighting coefficients for ODR (errors if they are provided)
+                            # Define dataset (with or without errors)
                             if fit_error:
-                                wd = xdata_all / xerr_all
-                                we = ydata_all / yerr_all
+                                data = odr.RealData(x=xdata[idx], y=ydata[idx], sx=xerr[idx], sy=yerr[idx])
                             else:
-                                wd = np.ones(len(xdata_all))
-                                we = np.ones(len(ydata_all))
+                                data = odr.RealData(x=xdata[idx], y=ydata[idx])
 
                             # Run ODR
-                            data = odr.Data(x=xdata_all[idx], y=ydata_all[idx], wd=wd[idx], we=we[idx])
                             model = odr.unilinear
                             myodr = odr.ODR(data, model, beta0=beta0)
                             out = myodr.run()
@@ -390,8 +389,8 @@ def updateAnalysisCanvas(canvas, step, config, results, dataframe, geometry, sav
 
                         x = np.linspace(xdata_all.min(), xdata_all.max())
                         y = popt[0] * x + popt[1]
-                        yhi = (popt[0] + perr[0]) * x + (popt[1] + perr[1])
-                        ylo = (popt[0] - perr[0]) * x + (popt[1] - perr[1])
+                        yhi = (popt[0] + 2 * perr[0]) * x + (popt[1] + 2 * perr[1])
+                        ylo = (popt[0] - 2 * perr[0]) * x + (popt[1] - 2 * perr[1])
 
                         # If atmospheric gases in the target gases, calculate background concentration
                         if plot_mass:
@@ -424,13 +423,13 @@ def updateAnalysisCanvas(canvas, step, config, results, dataframe, geometry, sav
                 # Are we plotting mass or moles
                 ax4[n].set_title('[%s]' % units[legtype], fontsize=8, loc='right')
 
-        # Reset all axes limits
-        for ax in all_axes:
-            ax.relim()
-            ax.autoscale_view()
-        # Make sure the residual axis always has units
-        for n in range(len(ax2)):
-            ax2[n].set(xlim=ax1[n].get_xlim())
+    # Reset all axes limits
+    for ax in all_axes:
+        ax.relim()
+        ax.autoscale_view()
+    # Make sure the residual axis always has units
+    for n in range(len(ax2)):
+        ax2[n].set(xlim=ax1[n].get_xlim())
 
     # Save frame as a PNG
     if save:
