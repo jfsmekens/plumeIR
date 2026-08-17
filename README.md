@@ -53,3 +53,9 @@ Data can be placed in the local '/data/' subfolder for easier access, in which c
 
 If using custom atmospheric profiles or local soundings,  ake sure to place them in the './atm/' folder.
 
+## License
+
+plumeIR is released under the MIT License — see [LICENSE](LICENSE).
+
+This covers plumeIR only. The RFM is separately owned and maintained at Oxford (AOPP), is not distributed here, and is not covered by this license. See "Installing RFM" above for how to obtain it.
+

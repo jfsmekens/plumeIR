@@ -85,9 +85,9 @@ E_file		:	None			# File containing the emissivity spectrum of the source	(Defaul
 # Inform fit with data from previous run
 force_param	:	None			# Force the value of a gas from an existing fit		()
 seed_param	:	None			# Use value from an existing fit as initial condition	()
-df_dir		:	/Users/jfsmekens/Documents/data/2021-08-11/IMO/fitResults_231026_160108_allGas_fitTemp/
+df_dir		:	None			# Directory holding the previous fit results		(only read if force_param or seed_param is set)
 use_residual	:	False			# Include an average residual from a previous fit?	()
-res_dir		:	/Users/jfsmekens/Documents/data/2021-08-11/4scans/fitResults_230913_130115
+res_dir		:	None			# Directory holding the previous fit residual		(only read if use_residual is True)
 
 # ILS
 fit_fov		:	True			# Fit the FOV?						()
