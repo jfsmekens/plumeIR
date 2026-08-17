@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+
+# RFM is obtained separately from Oxford (see README) and is not
+# redistributed with plumeIR.
+/RFM/
+
+# Run artifacts
+rfm.drv
+plumeIRlog.txt
+*.log
+/results/
+
+# Reference caches written into the data directory at runtime
+# (analysis.py: layerReference_*.pkl / emissionReference_*.pkl / solarReference_*.pkl)
+*Reference_*.pkl
