@@ -1,0 +1,54 @@
+# Conda environment for running plumeIR_v3 (and its companion packages).
+#
+# Setup:
+#   conda env create -f environment.yml
+#   conda activate plumeir
+#   # Companions first (plumeIR depends on them), from GitHub or, to work on
+#   # them, editable from local clones (pip install -e <clone>):
+#   pip install "git+https://github.com/jfsmekens/RFMwrapper.git"
+#   pip install "mieEODG[lut] @ git+https://github.com/jfsmekens/mieEODG.git"
+#   pip install -e ".[bruker,test]"      # from this folder
+#
+# RFM is found via the user-level config at ~/.config/rfmwrapper/config.ini
+# (shared across envs) — no per-env RFM setup needed.  mieEODG compiles a
+# Fortran extension; the system Homebrew gfortran + Apple clang are used.
+name: plumeir
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+
+  # --- core numerics / IO (binary wheels via conda-forge) ---
+  - numpy>=1.24
+  - scipy>=1.10
+  - pandas>=2.0
+  - matplotlib>=3.7
+  - openpyxl          # rfmwrapper (xlsx)
+  - tqdm>=4.60
+
+  # --- mieEODG LUT persistence (netCDF) ---
+  - netcdf4
+  - xarray
+
+  # --- colormaps ---
+  - cmcrameri         # plumeIR + rfmwrapper
+  - cmocean           # mieEODG plotting
+
+  # --- build toolchain for mieEODG's meson/Fortran extension + editable rebuilds ---
+  - meson
+  - meson-python
+  - ninja
+  - pkg-config
+  - setuptools>=68
+  - wheel
+
+  # --- run the test suite in this env (optional but handy for acceptance) ---
+  - pytest>=7.0
+
+  # --- pip-only dependencies (not on conda-forge) ---
+  # MIDAC .spc files are read by plumeIR itself (plumeIR.spectra.spc) since
+  # 2026-11-13; pyspectra / spc-spectra are no longer needed.
+  - pip
+  - pip:
+      - pyOptimalEstimation>=0.5
+      - brukeropusreader>=1.0   # Bruker OPUS I/O — optional [bruker] extra (included; you use it)

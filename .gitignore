@@ -1,25 +1,82 @@
-# macOS
-.DS_Store
-
+# =============================================================================
 # Python
+# =============================================================================
 __pycache__/
 *.py[cod]
-*.egg-info/
+*.pyo
+*.pyd
+*.so
+*.dylib
 
-# IDE
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# =============================================================================
+# plumeIR-specific
+# =============================================================================
+
+# Debug and test outputs — never committed.  Top-level debug/*.py are the
+# validation and diagnostic scripts (moved from test/ in M5) and stay tracked;
+# everything else under debug/ (baselines, logs, scratch) is local.
+debug/*
+!debug/*.py
+test/debug/
+test/demo_output/
+
+# Demo/measurement data — local working copies only, NEVER committed.
+# Spectra are large binaries; committing them is effectively irreversible
+# (see the public repo's RFM purge). Distribute datasets via release assets
+# or Zenodo, not git history.
+/data/
+
+# Reference cache — large, machine-specific, regenerated on demand
+plumeIR/cache/
+*.npz
+*.nc
+*.pkl
+
+# Run outputs — results go in user-specified output directories, not the repo
+*.csv
+*.xlsx
+plumeIRlog.txt
+
+# RFM working files — generated at runtime by RFMwrapper
+rfm.drv
+rfm.log
+*.drv
+opt*.out
+tra*.out
+rad*.out
+bbt*.out
+
+# =============================================================================
+# Tools and editors
+# =============================================================================
+.DS_Store
+.spyproject/
 .idea/
 .vscode/
+*.swp
+*.swo
 
-# RFM is obtained separately from Oxford (see README) and is not
-# redistributed with plumeIR.
-/RFM/
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
 
-# Run artifacts
-rfm.drv
-plumeIRlog.txt
-*.log
-/results/
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
 
-# Reference caches written into the data directory at runtime
-# (analysis.py: layerReference_*.pkl / emissionReference_*.pkl / solarReference_*.pkl)
-*Reference_*.pkl
+# Command-line run folders (python -m plumeIR, default --output-dir)
+plumeIR_runs/
