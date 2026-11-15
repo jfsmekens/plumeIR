@@ -350,6 +350,39 @@ def _check_temp_from(errors: list[str], fits: list[dict], gtype: str,
                f"receives it")
 
 
+def _check_path_tracer(errors: list[str], fits: list[dict], geom: dict,
+                       gtype: str) -> None:
+    """
+    ``path_tracer`` must be an ambient-only, non-target gas of an active window.
+
+    Its column measures the path only if it is the well-mixed background:
+    a tracer that is also a plume gas (dual) or a target is a variable of the
+    scene (a seep, a fire), not a reference.  Layer only (the catalogue
+    rejects it elsewhere).
+    """
+    tracer = geom.get("path_tracer")
+    if tracer is None or gtype != "layer":
+        return
+    active = [f for f in fits if f.get("fit") is True]
+    ambient = [f.get("_label", "FIT?") for f in active
+               if tracer in _as_list(f.get("atm_gases"))]
+    plume = [f.get("_label", "FIT?") for f in active
+             if tracer in _as_list(f.get("plume_gases"))]
+    target = [f.get("_label", "FIT?") for f in active
+              if tracer in _as_list(f.get("targets"))]
+    if not ambient:
+        _e(errors, f"GEOMETRY.path_tracer: '{tracer}' is not an atm_gas of any "
+           f"active window; add it to one (for CH4, the ν3 P-branch "
+           f"2880-2990 cm⁻¹ is the precise choice)")
+    if plume:
+        _e(errors, f"GEOMETRY.path_tracer: '{tracer}' is a plume gas in "
+           f"{plume}; a tracer must be the ambient background only")
+    if target:
+        _e(errors, f"GEOMETRY.path_tracer: '{tracer}' is a target in {target}; "
+           f"a tracer must not be a quantity of interest (choose another, "
+           f"e.g. N2O when CH4 is a target)")
+
+
 def validate(raw: dict) -> None:
     """
     Validate a parsed config dict.
@@ -455,6 +488,8 @@ def validate(raw: dict) -> None:
 
     for key in _TEMP_FROM:
         _check_temp_from(errors, fits, gtype, geom, key)
+
+    _check_path_tracer(errors, fits, geom, gtype)
 
     # Each species may be a target in at most one window, so the results table
     # has a single trusted retrieval per species (no ambiguous de-duplication).

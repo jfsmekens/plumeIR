@@ -144,6 +144,10 @@ class LayerGeometry:
         Explicit path to a self-emission spectrum, overriding discovery.
         ``None`` → find files whose stem contains ``'self'`` in ``data_dir``
         (the v2 convention).
+    path_tracer : str or None
+        Ambient gas whose fitted column checks ``pathlength`` after the fits
+        (:mod:`plumeIR.path_tracer`); a diagnostic, it changes no fit.
+        ``None`` → no diagnostic.
     """
     pathlength:          float
     atm_temp:            float
@@ -159,6 +163,7 @@ class LayerGeometry:
     no_gas:              bool  = default("GEOMETRY", "no_gas")
     subtract_self:       bool  = default("GEOMETRY", "subtract_self", "layer")
     self_file:           Path | None = default("GEOMETRY", "self_file")
+    path_tracer:         str | None  = default("GEOMETRY", "path_tracer")
 
 
 @dataclass(frozen=True)

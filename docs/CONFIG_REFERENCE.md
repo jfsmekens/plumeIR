@@ -59,6 +59,7 @@ Measurement geometry and geometry-specific forward model flags.
 | `atm_temp` | float | required in layer | K | > 0 | layer | Ambient atmospheric temperature |
 | `atm_pres` | float | required in layer | mbar | > 0 | layer | Ambient atmospheric pressure |
 | `plume_pres` | float | required in layer | mbar | > 0 | layer | Plume gas pressure |
+| `path_tracer` | str | `None` |  | one of CH4, N2O | layer | Well-mixed ambient gas whose fitted column checks pathlength (a diagnostic; it changes no fit). Must be an ambient-only, non-target gas of an active window. None = no path diagnostic |
 | `fit_gas_temp` | bool | `False` |  |  | layer | Fit the plume gas temperature (gas_temp) |
 | `fit_atm_temp` | bool | `False` |  |  | layer | Fit the atmospheric temperature (atm_temp) |
 | `model_gas_emission` | bool | `False` |  |  | layer | Model thermal emission from the hot plume gas (TIR windows only) |

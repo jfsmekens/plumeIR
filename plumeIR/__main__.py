@@ -57,6 +57,7 @@ from plumeIR.output import (
     FRAMES_DIR, LOG_NAME, PLOTS_DIR, RunInfo, make_run_dir, run_summary,
     write_fits, write_resolved_config, write_results, write_summary,
 )
+from plumeIR.path_tracer import tracer_report
 from plumeIR.pipeline import collect_run, prepare_run, stream_run
 from plumeIR.plotting.state import RunState
 from plumeIR.provenance import package_versions
@@ -339,7 +340,8 @@ def run(args: argparse.Namespace) -> int:
             stream.close()
 
         table = collect_run(setup, items)
-        write_results(table, run_dir)
+        tracer = tracer_report(table, setup.windows, setup.params, setup.geometry)
+        write_results(table, run_dir, tracer)
         try:
             write_fits(items, run_dir)
         except OSError as exc:      # the tables are written; only inspection is lost
@@ -348,7 +350,7 @@ def run(args: argparse.Namespace) -> int:
                        finished=datetime.now(), parallel=args.parallel,
                        n_workers=args.workers,
                        stopped=stopped or len(items) < setup.n_spectra)
-        summary = run_summary(setup, table, info, state.final_ratios())
+        summary = run_summary(setup, table, info, state.final_ratios(), tracer)
         write_summary(summary, run_dir)
         for line in summary.rstrip().splitlines():
             logger.info(line)

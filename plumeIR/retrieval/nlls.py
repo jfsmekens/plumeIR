@@ -54,8 +54,11 @@ class NonLinearLeastSquares:
 
     Parameters
     ----------
-    ftol, xtol : float
+    ftol, xtol, gtol : float
         Convergence tolerances passed to the solver.
+    x_scale : str or array_like
+        Variable scaling passed to the solver; ``'jac'`` rescales each
+        parameter by its Jacobian column norm.
     max_nfev : int or None
         Maximum forward evaluations (``None`` → solver default).
     plume_restart_scaling : float or None
@@ -64,13 +67,35 @@ class NonLinearLeastSquares:
         see :meth:`fit`).  ``None`` disables the restart.  The lower-cost of the
         default-start and elevated-start fits is kept, so a restart can never
         worsen the result.
+
+    Notes
+    -----
+    **Convergence settings (2026-11-14).** The defaults are ``x_scale='jac'``
+    and ``ftol = xtol = gtol = 1e-8``; they were scipy's unscaled variables
+    with ``ftol = xtol = 1e-6`` (``gtol`` 1e-8).  ``least_squares`` tests the
+    step against the *unscaled* parameter norm, which the polynomial
+    coefficients dominate (~1e5 for a single beam), so a step that is large
+    in a gas scaling, ``fov`` or ``nu_shift`` counted as converged and fits
+    stopped short of the minimum.  Measured on the validation datasets against
+    ``x_scale='jac'`` at 1e-12: layer CO window, median RMSE 4.6% above the
+    minimum, CO ×0.79 and CO2 ×0.91; emission, ash off by up to 40% of its
+    series peak (99th percentile 13%),
+    SO2 up to 11%.  The new defaults reach the same minimum as the 1e-12
+    reference in every layer window and come within 0.4% of the peak in
+    emission, at ~1.5× the run time (layer 34 → 50 s, emission 86 → 132 s,
+    8 workers).  ``'jac'`` with the old tolerances is not enough (CO window
+    at the minimum in 47% of spectra).
     """
 
-    def __init__(self, ftol: float = 1e-6, xtol: float = 1e-6,
+    def __init__(self, ftol: float = 1e-8, xtol: float = 1e-8,
                  max_nfev: int | None = None,
-                 plume_restart_scaling: float | None = 50.0) -> None:
+                 plume_restart_scaling: float | None = 50.0,
+                 gtol: float = 1e-8,
+                 x_scale: str | np.ndarray = "jac") -> None:
         self.ftol = ftol
         self.xtol = xtol
+        self.gtol = gtol
+        self.x_scale = x_scale
         self.max_nfev = max_nfev
         self.plume_restart_scaling = plume_restart_scaling
 
@@ -131,7 +156,8 @@ class NonLinearLeastSquares:
         def _solve(x0):
             return least_squares(
                 _resid, x0, bounds=(lower, upper), method="trf",
-                ftol=self.ftol, xtol=self.xtol, max_nfev=self.max_nfev,
+                ftol=self.ftol, xtol=self.xtol, gtol=self.gtol,
+                x_scale=self.x_scale, max_nfev=self.max_nfev,
             )
 
         try:

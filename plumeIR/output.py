@@ -9,7 +9,8 @@ The run output folder: one directory per run, written by any client.
         summary.txt        package versions (plumeIR, rfmwrapper, mieEODG, with
                            git commits where known), spectra loaded and
                            fitted, ILS used, convergence and R² per window,
-                           final ratio regressions
+                           final ratio regressions, and with
+                           GEOMETRY.path_tracer the path check
         fits.npz           every fit's measured, model and reference-continuum
                            spectra, per window (M3c), for ``--inspect``
         run.log            written by the client's log handler, not here
@@ -38,7 +39,9 @@ import numpy as np
 
 from plumeIR import __version__
 from plumeIR.config.parser import read_config, write_config
+from plumeIR.constants import POSSIBLE_AEROSOLS
 from plumeIR.exceptions import ConfigError, RunFolderError
+from plumeIR.path_tracer import PathReport
 from plumeIR.provenance import package_versions
 from plumeIR.retrieval.results import (
     COL_R2, COL_SPECTRUM, COL_SUCCESS, COL_WINDOW, ResultsTable, r_squared,
@@ -141,7 +144,8 @@ def write_resolved_config(raw: dict, run_dir: Path) -> Path:
     return path
 
 
-def write_results(table: ResultsTable, run_dir: Path) -> tuple[Path, Path]:
+def write_results(table: ResultsTable, run_dir: Path,
+                  tracer: PathReport | None = None) -> tuple[Path, Path]:
     """
     Write the long and wide results tables.
 
@@ -151,6 +155,9 @@ def write_results(table: ResultsTable, run_dir: Path) -> tuple[Path, Path]:
         The run's results (possibly of a stopped run).
     run_dir : Path
         The run folder.
+    tracer : PathReport or None
+        The path diagnostic (``GEOMETRY.path_tracer``); its per-spectrum
+        implied path is added to the wide table as ``tracer_path_km``.
 
     Returns
     -------
@@ -161,12 +168,16 @@ def write_results(table: ResultsTable, run_dir: Path) -> tuple[Path, Path]:
     """
     long_csv, wide_csv = run_dir / LONG_NAME, run_dir / WIDE_NAME
     table.to_csv(long_csv)
-    table.wide().to_csv(wide_csv)
+    wide = table.wide()
+    if tracer is not None and tracer.best is not None:
+        wide = wide.join(tracer.per_spectrum(), how="left")
+    wide.to_csv(wide_csv)
     return long_csv, wide_csv
 
 
 def run_summary(setup, table: ResultsTable, info: RunInfo,
-                ratios: dict | None = None) -> str:
+                ratios: dict | None = None,
+                tracer: PathReport | None = None) -> str:
     """
     A short plain-text account of a run.
 
@@ -181,6 +192,10 @@ def run_summary(setup, table: ResultsTable, info: RunInfo,
     ratios : dict or None
         Final ratio regressions, ``(y, x)`` → ``RatioFit`` or ``None``
         (``RunState.final_ratios``), over every fitted spectrum.
+    tracer : PathReport or None
+        The path diagnostic (:func:`plumeIR.path_tracer.tracer_report`):
+        the implied path per window, ambient VMRs and ratio intercepts at
+        both paths.
 
     Returns
     -------
@@ -246,6 +261,8 @@ def run_summary(setup, table: ResultsTable, info: RunInfo,
                          f"{fit.mswd:.3g}"])
         lines += [""] + _table(["ratio", "method", "n", "slope", "1 sigma",
                                 "intercept", "mswd"], rows)
+    if tracer is not None:
+        lines += [""] + _tracer_lines(tracer, ratios)
     lines += [
         "",
         f"{LONG_NAME:<18}every parameter of every fit, with errors",
@@ -253,6 +270,48 @@ def run_summary(setup, table: ResultsTable, info: RunInfo,
         f"{FITS_NAME:<18}every fit's spectra, for plumeIR RUN_FOLDER --inspect",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _tracer_lines(tracer: PathReport, ratios: dict | None) -> list[str]:
+    """The path-diagnostic block of the summary."""
+    lines = [f"path check      {tracer.tracer} at {tracer.background_ppmv:.4g} ppmv; "
+             f"configured pathlength {tracer.configured_km:.4g} km "
+             f"(diagnostic only: no fit uses it)"]
+    if tracer.best is None:
+        return lines + [f"                no window has {tracer.tracer} fitted in "
+                        "enough spectra"]
+    rows = []
+    for label, w in tracer.windows.items():
+        talk = (f"{w.crosstalk_gas} {w.crosstalk_r:+.2f}"
+                if w.crosstalk_gas else "-")
+        rows.append([label + (" *" if label == tracer.best else ""),
+                     str(len(w.path_km)), f"{w.median:.3f}",
+                     f"{w.quantile(0.05):.3f}-{w.quantile(0.95):.3f}",
+                     f"{100 * w.rel_error:.1f}%", talk])
+    lines += _table(["window", "n", "path [km]", "p5-p95", "fit error",
+                     "r plume gas"], rows)
+    lines += [f"implied path    {tracer.path_km:.3f} km ({tracer.best}, smallest "
+              f"fit error), {tracer.ratio:.2f}× the configured path"]
+    rows = [[a.window, a.gas, f"{a.configured_ppmv:.4g}", f"{a.implied_ppmv:.4g}"]
+            for a in tracer.ambient]
+    lines += [""] + _table(["window", "ambient gas", "VMR at pathlength",
+                            "VMR at implied path"], rows)
+    if ratios:
+        rows = []
+        for (y, x), fit in ratios.items():
+            # A gas's intercept is a column along the path; an aerosol's is a
+            # mass, with no mixing ratio.
+            if (fit is None or not np.isfinite(fit.intercept)
+                    or y in POSSIBLE_AEROSOLS):
+                continue
+            at_cfg, at_imp = tracer.background_vmr(fit.intercept)
+            rows.append([f"{y}/{x}", f"{fit.intercept:.4g}", f"{at_cfg:.4g}",
+                         f"{at_imp:.4g}"])
+        if rows:
+            lines += [""] + _table(["ratio", "intercept [molec/cm2]",
+                                    "as VMR at pathlength [ppmv]",
+                                    "at implied path [ppmv]"], rows)
+    return lines
 
 
 def write_summary(text: str, run_dir: Path) -> Path:

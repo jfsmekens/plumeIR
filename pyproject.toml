@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plumeIR"
-version = "3.0.0rc3"
+version = "3.0.0rc4"
 description = "Retrieval of volcanic and atmospheric gases and aerosols from open-path FTIR spectra"
 readme = "README.md"
 license = { text = "MIT" }

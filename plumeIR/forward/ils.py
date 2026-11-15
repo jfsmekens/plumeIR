@@ -47,13 +47,16 @@ kernel a *staircase* in its own parameters:
 
 The kernel is trimmed to a length set by ``trim_opd`` (default: the nominal
 ``max_opd``) rather than the live ``max_opd``, so that the kernel *length* stays
-constant while its *shape* varies during a fit.
+constant while its *shape* varies during a fit.  The core length is converged
+for the line shape (:func:`core_support`): it depends on the apodization and
+OPD only, never on ``fov``, so a held and a fitted ``fov`` see the same core.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 
@@ -81,9 +84,33 @@ _NB_COEFFS = {
 #: see ``_oversampling``.)
 _DEFAULT_KERNEL_OPD_FACTOR = 1.0
 
-#: Half-width of the untrimmed ILS core, in units of ``1 / trim_opd``: the
-#: kernel keeps +/-5 sinc limbs of the nominal OPD.
+#: Minimum half-width of the ILS core, in units of ``1 / trim_opd``: the
+#: kernel keeps at least +/-5 sinc limbs of the nominal OPD.
 _CORE_LIMBS = 5.0
+
+#: Largest line-shape mass allowed outside the kernel's core support, at that
+#: support or any wider one (2026-11-14).  The core grows from ``_CORE_LIMBS``
+#: until the cut mass stays below this, so the support follows the line shape
+#: (apodization, OPD) alone.  Basis, layer validation set (MIDAC, triangle,
+#: max_opd 1.037 cm, fov held at 0.015, 418 spectra), columns against a
+#: +/-60 cm⁻¹ kernel: at +/-4.9 cm⁻¹ (cut mass 1.8%) SO2 ×0.987, HCl ×0.993,
+#: CO2 ×0.995; at +/-15 (0.56%) ≤ 0.2%; at +/-30 (0.26%) ≤ 0.08%.  The tail
+#: term in ``apply_ils`` does not carry 1.8% accurately enough.  NB medium and
+#: Hann meet this at about the 5-limb core; a triangle window needs
+#: +/-38 cm⁻¹ at 1.037 cm.
+_TAIL_MASS_TOL = 2.5e-3
+
+#: Widest core the search considers, in units of ``1 / trim_opd``.
+_MAX_CORE_LIMBS = 100.0
+
+#: Minimum OPD oversampling (2026-11-14).  NB and boxcar windows end in a step
+#: at ``max_opd`` (NB medium 0.152), which the edge sample's fractional weight
+#: represents only approximately: kernel error against k = 8, NB medium,
+#: 1.037 cm, 2760 cm⁻¹: 1.0e-3 of peak at k = 1, 2.3e-4 at 2, 3e-5 at 4
+#: (Hann 5e-6 at 1; triangle insensitive).  k used to follow the support
+#: alone, so a fitted fov's 0.2 bound (k = 4) and a held fov (k = 1) gave
+#: different kernels.  Costs a 2500-point FFT per kernel instead of 625.
+_MIN_OVERSAMPLING = 4
 
 #: Half-width of the broad mean standing in for the far tails, in units of the
 #: kernel support S.  A 1/x² tail beyond S has its median weight at 2S.  The
@@ -105,6 +132,11 @@ def _oversampling(support: float, nper_wn: float) -> int:
     its outer half must be empty, because the baseline is estimated from the
     first quarter of the grid.  Hence ``k·nper_wn / 2 >= 2·support``.
 
+    It is also at least ``_MIN_OVERSAMPLING``, whatever the support, because the
+    OPD spacing sets how well a window that does not reach zero at ``max_opd``
+    (boxcar, NB) is represented; letting the support alone set it made the
+    kernel depend on the ``fov`` bound.
+
     Parameters
     ----------
     support : float
@@ -115,11 +147,75 @@ def _oversampling(support: float, nper_wn: float) -> int:
     Returns
     -------
     int
-        Oversampling factor, at least 1.  It is 1 at every FOV met in practice
-        (the default ±5-limb core is 4.8 cm⁻¹ against a 12.5 cm⁻¹ half-span at
-        ``nper_wn`` 25), so the usual kernel is unchanged.
+        Oversampling factor, at least ``_MIN_OVERSAMPLING``; more for a slowly
+        decaying line shape (triangle, ~38 cm⁻¹ at 1.037 cm, needs 7 at
+        ``nper_wn`` 25).
     """
-    return max(1, int(np.ceil(4.0 * support / nper_wn - 1e-9)))
+    return max(_MIN_OVERSAMPLING, int(np.ceil(4.0 * support / nper_wn - 1e-9)))
+
+
+@lru_cache(maxsize=64)
+def core_support(apod_type: str, trim_opd: float, nper_wn: float,
+                 fwhm_wn: float | None = None) -> float:
+    """
+    Half-width [cm⁻¹] of the kernel core needed by a line shape.
+
+    The smallest support, at least ``_CORE_LIMBS / trim_opd``, beyond which the
+    FOV-free line shape's cut mass, at that support **and every wider one**,
+    stays within ``_TAIL_MASS_TOL``.  Requiring it of every wider support
+    matters for windows with signed, oscillating tails (boxcar, NB): their cut
+    mass passes through zero, and a single crossing is not convergence.  It
+    depends only on the line shape, never on ``fov``, so a held and a fitted
+    ``fov`` use the same core.  Cached: computed once per line shape.
+
+    Parameters
+    ----------
+    apod_type : str
+        Apodization function name.
+    trim_opd : float
+        OPD [cm] fixing the kernel's length during a fit (the nominal
+        ``max_opd``).
+    nper_wn : float
+        Kernel grid points per cm⁻¹.
+    fwhm_wn : float or None
+        Gaussian apodization's target FWHM [cm⁻¹].
+
+    Returns
+    -------
+    float
+        Core half-width [cm⁻¹].
+    """
+    s_min = _CORE_LIMBS / trim_opd
+    s_max = _MAX_CORE_LIMBS / trim_opd
+    k = _oversampling(s_max, nper_wn)
+    dx = 1.0 / (k * nper_wn)
+    n_tot = int(round(k * nper_wn * nper_wn))
+    opd = np.arange(n_tot) * dx
+    apod = (_apodization(opd / trim_opd, apod_type, trim_opd, fwhm_wn)
+            * _truncation_weight(opd, trim_opd, dx))
+    a0 = float(apod[0])
+    shape = np.fft.fftshift(np.fft.fft(apod).real) - 0.5 * a0
+    wn = np.fft.fftshift(np.fft.fftfreq(n_tot, d=dx))
+    full_mass = 0.5 * a0 * n_tot
+    # Cut mass at each support |wn| (the shape is even, so +/- pairs share one).
+    order = np.argsort(np.abs(wn), kind="stable")
+    inside = np.cumsum(shape[order])          # mass within |wn| <= |wn[order]|
+    s_grid = np.abs(wn[order])
+    # Keep the last cumulative value at each distinct |wn| (+/- pairs).
+    last = np.r_[s_grid[1:] != s_grid[:-1], True]
+    s_grid, cut = s_grid[last], 1.0 - inside[last] / full_mass
+    sel = (s_grid >= s_min) & (s_grid <= s_max)
+    s_grid, cut = s_grid[sel], np.abs(cut[sel])
+    # Envelope: the largest cut mass at this support or any wider one.
+    envelope = np.maximum.accumulate(cut[::-1])[::-1]
+    ok = np.flatnonzero(envelope <= _TAIL_MASS_TOL)
+    if ok.size == 0:
+        logger.warning(
+            "ILS core for %s at %.4g cm: line-shape mass beyond +/-%.1f cm⁻¹ "
+            "exceeds %.1e; using that support.", apod_type, trim_opd, s_max,
+            _TAIL_MASS_TOL)
+        return float(s_max)
+    return float(max(s_min, s_grid[ok[0]]))
 
 
 def kernel_trim_fov(fov_param) -> float | None:
@@ -128,8 +224,13 @@ def kernel_trim_fov(fov_param) -> float | None:
 
     The kernel support must cover the widest FOV box the fit can reach, and must
     not change length while ``fov`` is perturbed (a sample appearing at the edge
-    would be a step in the finite-difference Jacobian).  A varied ``fov``
-    therefore uses its upper bound; a fixed one its value.
+    would be a step in the finite-difference Jacobian), so it uses the upper
+    bound.  A **fixed** ``fov`` uses the upper bound too (2026-11-14): sizing
+    it from the held value gave a held and a fitted ``fov`` different kernels,
+    and the layer SO2 column moved 1.1% with the ``vary`` flag alone.  For a
+    window that ends in a step at ``max_opd`` (NB, boxcar) the 1/x ringing
+    never converges in support, so only an identical support makes the two
+    identical.  A fixed ``fov`` with no finite upper bound uses its value.
 
     Parameters
     ----------
@@ -142,9 +243,9 @@ def kernel_trim_fov(fov_param) -> float | None:
         FOV [rad] for :func:`make_ils`'s ``trim_fov``; ``None`` (support follows
         the live ``fov``) when a varied ``fov`` has no finite upper bound.
     """
-    if not fov_param.vary:
-        return float(fov_param.value)
     upper = float(fov_param.bounds[1])
+    if not fov_param.vary:
+        return upper if np.isfinite(upper) else float(fov_param.value)
     if not np.isfinite(upper):
         global _WARNED_UNBOUNDED_FOV
         if not _WARNED_UNBOUNDED_FOV:          # called per forward evaluation
@@ -351,9 +452,10 @@ def make_ils(
     fwhm_wn : float or None
         Target spectral FWHM [cm⁻¹]; Gaussian apodization only.
     trim_opd : float or None
-        OPD used to set the kernel's trimmed length (``±5 / trim_opd``).
-        ``None`` uses ``max_opd``.  Pass the *nominal* max_opd when fitting, so
-        the kernel length stays fixed while its shape varies.
+        OPD setting the kernel's core length (:func:`core_support`, at least
+        ``±5 / trim_opd``).  ``None`` uses ``max_opd``.  Pass the *nominal*
+        max_opd when fitting, so the kernel length stays fixed while its shape
+        varies.
     trim_fov : float or None
         FOV [rad] whose box width is added to the kernel's half-width, so the
         kernel holds the whole FOV box (the shift puts it entirely on one side
@@ -381,14 +483,15 @@ def make_ils(
         raise PlumeIRError(f"fov must be non-negative, got {fov}")
 
     # ------------------------------------------------------------------
-    # Kernel support: the +/-5-limb core of the nominal OPD plus the widest
-    # FOV box the kernel must hold.  Set by trim_opd/trim_fov, not the live
+    # Kernel support: the line shape's converged core (core_support, at least
+    # +/-5 limbs of the nominal OPD) plus the widest FOV box the kernel must
+    # hold.  Set by trim_opd/trim_fov, not the live
     # parameters, so the length is constant during a fit.
     # ------------------------------------------------------------------
     trim = float(trim_opd) if trim_opd is not None else max_opd
     box_fov = fov if trim_fov is None else max(float(trim_fov), fov)
     box_width = wn_center * (box_fov / 2.0) ** 2 / 2.0   # [cm⁻¹]
-    support = _CORE_LIMBS / trim + box_width
+    support = core_support(apod_type, trim, float(nper_wn), fwhm_wn) + box_width
 
     # ------------------------------------------------------------------
     # Fixed OPD grid — independent of max_opd, so nothing about the
@@ -447,16 +550,22 @@ def make_ils(
         raise PlumeIRError(
             f"apodization at zero OPD is {a0}; check apod_type={apod_type!r}."
         )
-    kernel  = np.fft.fftshift(np.fft.fft(apod).real) - 0.5 * a0
+    # FOV shift: a finite FOV displaces line centres by half the box width, to
+    # lower wavenumber, as well as broadening them.  Applied exactly, as the
+    # phase factor exp(-2πi·shift·x) on the interferogram, so the transform
+    # gives T(ν + shift): Re FFT(apod·e^{-2πi s x}) = (T(ν + s) + a0)/2, the
+    # pedestal unchanged.  It used to be a linear interpolation of the
+    # finished kernel, which averages neighbouring samples by an amount that
+    # depends on the fractional part of the shift: the kernel peak dipped
+    # 0.3% at half-sample shifts and recovered at whole ones, as large as the
+    # FOV broadening itself at these fov, so fitted fov settled where the
+    # shift is a whole number of samples (fov = 4·sqrt(n·dν/ν); 0.0175 and
+    # the 0.001 bound in the layer CO window; 2026-11-14, ILS decision 10).
+    shift = fov_width / 2.0
+    phase = np.exp(-2j * np.pi * shift * opd)
+    kernel  = np.fft.fftshift(np.fft.fft(apod * phase).real) - 0.5 * a0
     wn_grid = np.fft.fftshift(np.fft.fftfreq(n_tot, d=dx))
     full_mass = 0.5 * a0 * n_tot
-
-    # ------------------------------------------------------------------
-    # FOV shift: a finite FOV displaces line centres as well as broadening
-    # them.  Smooth in fov already (linear interpolation of a shifted grid).
-    # ------------------------------------------------------------------
-    shift = fov_width / 2.0
-    kernel = np.interp(wn_grid, wn_grid - shift, kernel)
 
     # ------------------------------------------------------------------
     # Trim to the support (symmetric, so zero stays the centre sample that

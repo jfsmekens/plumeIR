@@ -49,6 +49,13 @@ KEY_TYPES: tuple[str, ...] = ("bool", "int", "float", "str", "path", "list", "wi
 SECTIONS: tuple[str, ...] = ("DATA", "MODEL", "GEOMETRY", "RETRIEVAL",
                              "DEFAULTS", "PLOT", "FIT")
 
+#: Gases that can serve as ``path_tracer`` (layer): well mixed at a known
+#: background, absent from volcanic plumes.  CH4 on its ν3 P-branch is the
+#: precise one; N2O (2ν1, 2540-2600 cm⁻¹) a series-median check where CH4 is
+#: itself a target (seeps, mud volcanoes, fires).  Measured 2026-11-15 on the
+#: layer validation set (docs/CONFIG_GUIDE.md, section 3.1).
+PATH_TRACERS: tuple[str, ...] = ("CH4", "N2O")
+
 #: Regression methods for gas ratios: Siegel repeated medians (robust, the
 #: default), Theil-Sen (robust), orthogonal distance regression (errors on
 #: both axes, weighted by the fit errors).  Re-exported by ``objects``.
@@ -309,6 +316,11 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
     Key("GEOMETRY", "plume_pres", "float", unit="mbar", **_POSITIVE,
         geometries=_GEO_LAYER, required=_GEO_LAYER,
         help="Plume gas pressure"),
+    Key("GEOMETRY", "path_tracer", "str", None, choices=PATH_TRACERS,
+        geometries=_GEO_LAYER, none="no path diagnostic",
+        help="Well-mixed ambient gas whose fitted column checks pathlength "
+             "(a diagnostic; it changes no fit). Must be an ambient-only, "
+             "non-target gas of an active window"),
     Key("GEOMETRY", "fit_gas_temp", "bool", False, geometries=_GEO_LAYER,
         help="Fit the plume gas temperature (gas_temp)"),
     Key("GEOMETRY", "fit_atm_temp", "bool", False, geometries=_GEO_LAYER,

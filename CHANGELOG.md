@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0 — unreleased (preview: 3.0.0rc3)
+## 3.0.0 — unreleased (preview: 3.0.0rc4)
 
 plumeIR v3 is a rewrite of v2, not an update of it: no file is carried over.
 v2 remains available at its tag (`v2.0`) in `jfsmekens/plumeIR`. This entry
@@ -33,15 +33,30 @@ measured size of each change is given where it is known.
   pedestal and renormalised the truncated kernel, which deepened every line.
   Layer columns were 2.4-4.7% low from this truncation alone; they are now
   converged to ≤ 0.15%.
+- *The kernel length follows the line shape, not `fov`.* It used to be
+  narrower when `fov` was held than when it was fitted (±4.9 against
+  ±15 cm⁻¹ for a triangle window), so holding `fov` moved layer SO2 by 1.1%
+  at the same value. The core now grows until ≤ 0.25% of the line shape lies
+  outside it (triangle ±38 cm⁻¹ at 1.037 cm; NB and Hann unchanged), and a
+  held `fov` uses the same length as a fitted one. Layer columns with `fov`
+  fitted move ≤ 0.15%; emission ≤ 0.1%.
+- *The FOV shift is exact.* It was a linear interpolation of the kernel,
+  which made the line shape slightly broader at fractional-sample shifts, so
+  a fitted `fov` settled where the shift is a whole number of model samples
+  (0.0175 rad in the layer CO window, from any start). Now a phase factor on
+  the interferogram. Layer CO and CO2 no longer split between two solutions:
+  their correlation with v2 rises from 0.80 to 0.99 and the CO/SO2 and
+  CO2/SO2 ratio scatter nearly halves; median columns unchanged.
 - *`max_opd` and `apod_type` come from the data files.* The maximum OPD is
   half of `1/RES` (1.037 cm for both validation instruments). v2 configs
   pinned it at 2.0 cm (Bruker) or 1.8 cm (MIDAC), and a fitted FOV absorbed
   the error (85.6 mrad against a 30 mrad nominal). Correcting it moves HCl by
   +12%, layer SO2 by +1.6% and emission SO2 by −2.6%.
 
-Net effect on the layer validation dataset (418 spectra), v3/v2:
-SO2 1.026, HCl 2.046, CO 1.619, CO2 1.481. The remaining HCl factor has not
-been explained.
+Net effect on the layer validation dataset (418 spectra, `atm_temp` held at
+the measured 284 K), v3/v2: SO2 1.028, HCl 2.045, CO 2.109, CO2 1.762
+(re-recorded 2026-11-15). The remaining HCl, CO and CO2 factors have not been
+explained.
 
 **Emission geometry**
 
@@ -141,6 +156,14 @@ been explained.
 - Each run records the plumeIR, rfmwrapper and mieEODG versions and git
   commits.
 - A start-up check for RFM that stops with instructions.
+- Layer: a check on the path length (`path_tracer : CH4` or `N2O`). After
+  the fits, the ambient column of a well-mixed gas gives the path; the summary
+  reports it per window, with ambient mixing ratios and ratio intercepts at
+  both paths, `results_wide.csv` gains `tracer_path_km`, and the log warns
+  when it is more than 20% off `pathlength`. It changes no fit: no plume
+  column depends on the path. The layer example has a CH4 window
+  (2880-2990 cm⁻¹) for it; on the example data it gives 2.00 km against the
+  first estimate of 1.22 km, and the example now uses 2.0 km.
 
 ### Config changes
 

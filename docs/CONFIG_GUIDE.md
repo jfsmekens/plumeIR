@@ -95,7 +95,7 @@ thickness `plume_thickness` somewhere along it, in front of a hot source.
 
 | Key | What to put | Notes |
 |---|---|---|
-| `pathlength` | total distance spectrometer to source [km] | the ambient gases are computed over all of it |
+| `pathlength` | total distance spectrometer to source [km] | the ambient gases are computed over all of it; no plume column depends on it (see below) |
 | `plume_thickness` | depth of plume along the path [km] | sets the plume's optical path; default 0.05 |
 | `atm_temp` | air temperature at collection [K] | **measure it**; see below |
 | `atm_pres` | air pressure at collection [mbar] | from a barometer, or from altitude |
@@ -109,6 +109,7 @@ thickness `plume_thickness` somewhere along it, in front of a hot source.
 | `subtract_self` | subtract the instrument's own emission | needs a spectrum with "self" in its name in the data folder, or `self_file` |
 | `self_file` | that spectrum, if it is named otherwise | |
 | `no_gas` | not available in v3.0 | must be False |
+| `path_tracer` | `CH4` or `N2O`: a check on `pathlength` | optional; see below |
 
 **Ambient temperature: measure it and keep it fixed.** `atm_temp` is the air
 temperature along the path, and a thermometer reading at collection is better
@@ -121,6 +122,26 @@ change sign. plumeIR warns about this combination when it checks the config.
 If the air temperature must be fitted, fit it in the HCl window (2690-2830),
 which measured it without following the plume; section 5.6 has the
 comparison and how to pass it to the other windows.
+**Path length: check it with CH4.** The distance to a lava source is often a
+guess. No plume column depends on it: the gas tables give the same optical
+depth per molecule at any path, so the fitted plume columns and R² stay the
+same if `pathlength` is wrong (measured with 1.22 km and 2.0 km: every median
+identical; rounding in the tables moves a few individual fits).
+What it sets is the reading of ambient columns as mixing ratios: the
+background of a fitted ambient gas, and a ratio's intercept read as a
+background. `path_tracer : CH4` checks it: after the fits, the ambient CH4
+column (well mixed at the `*DEFAULTS` `CH4_conc`, absent from volcanic plumes)
+gives the path, `summary.txt` reports it per window with the ambient VMRs and
+ratio intercepts at both paths, `results_wide.csv` gets a `tracer_path_km`
+column, and the log warns when it differs from `pathlength` by more than 20%.
+It needs CH4 as an ambient gas of an active window: the ν3 P-branch,
+2880-2990 cm⁻¹, gives about 2% per spectrum (section 9.1, `*FIT5`); the HCl
+window's weak CH4 lines about 5%. Set `CH4_conc` to the background of the
+site and year (about 1.93 ppmv in 2021 at northern mid-latitudes; the default
+is 1.9): the path scales inversely with it. Where CH4 is itself part of the
+scene (a seep, a mud volcano, a fire), use `N2O` in a 2540-2600 cm⁻¹ window
+instead; it follows the plume more, so trust its series median rather than
+single spectra. The tracer may not be a plume gas or a target.
 The `*GEOMETRY` flags apply to every window; a window can override them with
 its own `fit_atm_temp`, `fit_gas_temp` or `model_gas_emission` (section 5.6).
 
@@ -305,8 +326,8 @@ So if `atm_temp` is fitted at all, fit it in the HCl window. Two cautions:
   receives `gas_temp` from the SO2 window and also supplies `atm_temp` to the
   others, the order is: SO2 window first (fits `gas_temp`, keeps the measured
   `atm_temp`), HCl window second (receives `gas_temp`, fits `atm_temp`), then
-  the rest (receive both). Section 9.1 is set up this way. Two windows
-  cannot each take a temperature from the other; plumeIR refuses the loop
+  the rest (receive both). Two windows cannot each take a temperature
+  from the other; plumeIR refuses the loop
   ("must come before"). Running the SO2 window at the measured `atm_temp`
   costs little: on the validation data, using the HCl window's fitted value
   there instead changed SO2 by 0.13% (sd between spectra, median −0.001%)
@@ -318,7 +339,10 @@ So if `atm_temp` is fitted at all, fit it in the HCl window. Two cautions:
   CO2 by 6% between spectra. Where the air temperature does not change much
   during a series, **fixing `atm_temp` at a measured value, or at the HCl
   window's median from a first run, is better**. Pass it per spectrum when
-  the air temperature really changes (long series, day-night).
+  the air temperature really changes (long series, day-night). Section 9.1
+  keeps the measured value in every window and fits `atm_temp` in the HCl
+  window only as a check: compare its median with the value you configured.
+  To pass it on instead, add `atm_temp_from : FIT1` to the later windows.
 
 ### 5.7 Hot-gas emission: `model_gas_emission`
 
@@ -419,10 +443,11 @@ marked in a comment with your own.
 
 ### 9.1 Layer
 
-Five windows, the plume temperature fitted once and passed to every other
-window, the ambient temperature fitted in the HCl window and passed on (see
-the cautions in section 5.6), and `polydeg : 2` everywhere to match v2's
-quadratic background.
+Six windows, the plume temperature fitted once and passed to every other
+window, the ambient temperature held at the measured value everywhere and
+fitted in the HCl window only as a check (section 5.6), `polydeg : 2`
+everywhere to match v2's quadratic background, and a CH4 window that checks
+the path length (section 3.1).
 
 ```
 *DATA
@@ -432,13 +457,15 @@ filter_files  : False                    # use every scene file in the folder
 
 *GEOMETRY
 type          : layer
-pathlength    : 1.22                     # km, spectrometer to source
+pathlength    : 2.0                      # km, spectrometer to source
+                                         # (from the CH4 check; first estimate 1.22)
 plume_thickness : 0.05                   # km
 atm_temp      : 284                      # K, measured at collection
 atm_pres      : 973                      # mbar, measured at collection
 plume_temp    : 450                      # K, starting value
 plume_pres    : 973                      # mbar
 subtract_self : True                     # needs a *self* spectrum in data_dir
+path_tracer   : CH4                      # check pathlength with *FIT5's CH4
 
 *RETRIEVAL
 retrieval_method : nlls
@@ -461,7 +488,7 @@ plume_gases   : HCl
 targets       : HCl, atm_temp
 polydeg       : 2
 plume_temp_from : FIT0                   # plume temperature from FIT0
-fit_atm_temp  : True                     # ambient temperature fitted here only
+fit_atm_temp  : True                     # a check on atm_temp; not passed on
 
 *FIT2
 fit           : True
@@ -472,7 +499,6 @@ plume_aero    : H2SO4
 targets       : H2SO4
 polydeg       : 2
 plume_temp_from : FIT0
-atm_temp_from : FIT1
 
 *FIT3
 fit           : True
@@ -481,8 +507,8 @@ atm_gases     : N2O, H2O, CO2
 plume_gases   : CO
 targets       : CO, CO2, H2O
 polydeg       : 2
-plume_temp_from : FIT0
-atm_temp_from : FIT1                     # never fit atm_temp where H2O is a target
+plume_temp_from : FIT0                   # atm_temp stays at the measured value:
+                                         # never fit it where H2O is a target
 
 *FIT4
 fit           : True
@@ -492,7 +518,14 @@ plume_gases   : HF
 targets       : HF
 polydeg       : 2
 plume_temp_from : FIT0
-atm_temp_from : FIT1
+
+*FIT5
+fit           : True
+fit_window    : 2880, 2990                # CH4 ν3 P-branch: the path check
+atm_gases     : CH4, H2O, N2O
+plume_gases   : HCl                      # its R-branch lines are in the window
+polydeg       : 2
+plume_temp_from : FIT0
 
 *PLOT
 ratios        : HCl:SO2, CO2:SO2, H2O:SO2, HF:SO2, H2SO4:SO2

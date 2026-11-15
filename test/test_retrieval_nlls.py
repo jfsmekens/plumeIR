@@ -174,3 +174,64 @@ def test_multistart_matches_single_on_convex(forward):
     assert with_restart.value("SO2") == pytest.approx(no_restart.value("SO2"),
                                                       abs=1e-6)
     assert with_restart.rmse <= no_restart.rmse + 1e-12
+
+
+
+# ---------------------------------------------------------------------------
+# Convergence on a badly scaled problem (2026-11-14)
+# ---------------------------------------------------------------------------
+
+def _line_forest_case():
+    """
+    A single-beam fit as in a layer window: a cubic baseline of ~1e5, an
+    order-1 gas scaling over a forest of narrow lines, and a real ILS with
+    ``fov`` and ``nu_shift`` free.  Noiseless, so the minimum is the truth.
+    """
+    wn = np.arange(2350.0, 2600.0, 0.04)
+    rng = np.random.default_rng(1)
+    centres, strengths = rng.uniform(2420, 2530, 120), rng.lognormal(0, 1, 120)
+    band = sum(s * 0.02 * np.exp(-((wn - c) / 0.03) ** 2)
+               for s, c in zip(strengths, centres))
+    lut = GasLUT(species="SO2", wn=wn, temp_nodes=np.linspace(300.0, 1000.0, 5),
+                 od_table=np.tile(band, (5, 1)), ref_scd=1e17)
+    params = ParameterSet(
+        [Parameter(f"poly{i}", v, True, (-np.inf, np.inf), ParameterKind.POLYNOMIAL)
+         for i, v in enumerate((0.9e5, 0.0, 0.0, 0.0))]
+        + [Parameter("SO2", 0.5, True, (0.0, np.inf), ParameterKind.GAS_PLUME,
+                     ref_column=1e17),
+           Parameter("fov", 0.02, True, (0.001, 0.2), ParameterKind.SPECTRAL),
+           Parameter("nu_shift", 0.0, True, (-1.0, 1.0), ParameterKind.SPECTRAL)])
+    ref = Reference(wn=wn, gas_luts={"SO2": lut}, geometry_type=GeometryType.LAYER)
+    geom = LayerGeometry(pathlength=1.0, atm_temp=290.0, atm_pres=1000.0,
+                         plume_temp=450.0, plume_pres=1000.0, plume_thickness=0.05)
+    window = FitWindowConfig(label="FIT0", wn_start=2450.0, wn_stop=2550.0,
+                             atm_gases=(), plume_gases=("SO2",), plume_aero=(),
+                             targets=("SO2",), polydeg=3)
+
+    class _Retr:
+        apod_type = "triangle"
+        max_opd = 1.037
+
+    forward = TransmittanceForwardModel(ref, params, geom, _Retr(), window,
+                                        np.arange(2450.0, 2550.0, 0.25))
+    truth = np.array([1.0e5, -3.0e4, 7.0e3, 3.0e2, 2.0, 0.03, 0.05])
+    return forward, params, forward(truth)
+
+
+def test_converges_with_single_beam_scale():
+    # Package defaults (x_scale='jac', tolerances 1e-8) reach the truth.
+    forward, params, measured = _line_forest_case()
+    res = NonLinearLeastSquares(plume_restart_scaling=None).fit(forward, params, measured)
+    assert res.value("SO2") == pytest.approx(2.0, abs=1e-6)
+    assert res.value("fov") == pytest.approx(0.03, abs=1e-6)
+    assert res.value("nu_shift") == pytest.approx(0.05, abs=1e-6)
+
+
+def test_rc3_settings_stop_short():
+    # The settings up to rc3 stop early: the unscaled xtol test compares each
+    # step with ||x|| ~ 1e5, set by the baseline.  Measured: SO2 1.974,
+    # rmse 5.5 against 9e-10.  Keeps the reason for the defaults on record.
+    forward, params, measured = _line_forest_case()
+    res = NonLinearLeastSquares(ftol=1e-6, xtol=1e-6, x_scale=1.0,
+                                plume_restart_scaling=None).fit(forward, params, measured)
+    assert abs(res.value("SO2") - 2.0) > 1e-2

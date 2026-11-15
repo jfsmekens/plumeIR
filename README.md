@@ -1,6 +1,6 @@
 # plumeIR
 
-> **Pre-release (3.0.0rc3).** This is a preview of plumeIR v3 on the
+> **Pre-release (3.0.0rc4).** This is a preview of plumeIR v3 on the
 > `v3-preview` branch, published so it can be tried before release. Results
 > and config keys may still change. The stable version is v2.0, on `main`
 > and at tag `v2.0`.
@@ -148,10 +148,11 @@ Model (RFM), *J. Quant. Spectrosc. Radiat. Transfer* **186**, 243-253.
 ## Quick start
 
 The `examples/` folder holds one config per geometry: `layer.ini` (MIDAC,
-layer geometry, five windows: SO2, HCl, sulphate aerosol in the thermal
-infrared, CO with CO2 and H2O, and HF; the plume temperature fitted in the SO2
-window and the ambient temperature in the HCl window, both passed to the
-others; `polydeg : 2` throughout, as in v2) and `emission.ini` (Bruker,
+layer geometry, six windows: SO2, HCl, sulphate aerosol in the thermal
+infrared, CO with CO2 and H2O, HF, and CH4 as a check on the path length; the
+plume temperature fitted in the SO2 window and passed to the others, the
+ambient temperature held at the measured value; `polydeg : 2` throughout, as
+in v2) and `emission.ini` (Bruker,
 emission geometry, SO2 with sulphate and ash aerosol). Both are explained in
 [docs/CONFIG_GUIDE.md](docs/CONFIG_GUIDE.md). The spectra they were validated
 on (2021-08-11 MIDAC, 2019-09-11 Bruker) are not in this repository; they are
@@ -276,8 +277,8 @@ v3.0 has been checked on two real datasets against independent results.
 
 | Geometry | Data | Reference | Result |
 |---|---|---|---|
-| layer, single beam | 418 MIDAC spectra against a lava source, 2021-08-11, windows SO2 / HCl / CO+CO2 | plumeIR v2 rerun with matched settings | SO2 v3/v2 1.026 (R 0.997). HCl, CO and CO2 differ by v2's known ILS faults (CHANGELOG) |
-| emission, absolute radiance | 300 Bruker spectra, Stromboli, 2019-09-11, 750-1250 cm⁻¹, SO2 + ash + H2SO4 | the earlier emission code's fits of the same spectra | SO2 r = 0.97, v3/earlier 0.85; ash events agree in timing (r 0.86) |
+| layer, single beam | 418 MIDAC spectra against a lava source, 2021-08-11, windows SO2 / HCl / CO+CO2 | plumeIR v2 rerun with matched settings | SO2 v3/v2 1.028 (R 0.997). HCl, CO and CO2 differ by v2's known ILS faults (CHANGELOG) |
+| emission, absolute radiance | 300 Bruker spectra, Stromboli, 2019-09-11, 750-1250 cm⁻¹, SO2 + ash + H2SO4 | the earlier emission code's fits of the same spectra | SO2 r = 0.97, v3/earlier 0.83; ash events agree in timing (r 0.85) |
 
 All spectra converge in both datasets. The reasons for each difference from
 v2 are given in the [CHANGELOG](CHANGELOG.md).

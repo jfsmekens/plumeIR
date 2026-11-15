@@ -68,7 +68,10 @@ class TestKernelProperties:
         k = build()
         assert k.kernel.shape == k.wn_grid.shape
         assert k.opd_grid[0] == 0.0
-        np.testing.assert_allclose(np.diff(k.opd_grid), 1.0 / NPER_WN)
+        dx = np.diff(k.opd_grid)
+        np.testing.assert_allclose(dx, dx[0])
+        # n_tot·dx = nper_wn keeps the kernel's spacing at the model grid's.
+        assert k.opd_grid.size * dx[0] == pytest.approx(NPER_WN)
 
     def test_apodization_is_case_insensitive(self):
         np.testing.assert_allclose(build(apod_type="nb medium").kernel,
@@ -88,6 +91,55 @@ class TestKernelProperties:
 # =============================================================================
 # Smoothness in fov — the reason this module exists
 # =============================================================================
+
+class TestFovShiftIsExact:
+    """
+    Regression (2026-11-14): the FOV shift was a linear interpolation of the
+    finished kernel, which smooths it by an amount set by the shift's
+    fractional part (peak −0.3% at half a sample, none at whole samples).
+    Fitted fov settled where the shift is a whole number of model samples:
+    0.0175 rad and the 0.001 bound in the layer CO window, from any start.
+    """
+
+    @pytest.mark.parametrize("n_samples", [0.5, 1.0, 3.25])
+    def test_centroid_follows_the_shift(self, n_samples):
+        """The FOV shift is ν·fov²/16, to lower wavenumber, at any fraction.
+        (Hann: NB and boxcar ring as 1/x, so their centroid depends on where
+        the kernel is cut.)"""
+        nu, dnu = 2085.0, 1.0 / NPER_WN
+        fov = 4.0 * np.sqrt(n_samples * dnu / nu)
+        k = build(fov=fov, max_opd=1.037, wn_center=nu, apod_type="Hann",
+                  trim_opd=1.037, trim_fov=0.2)
+        assert (k.wn_grid * k.kernel).sum() == pytest.approx(-n_samples * dnu,
+                                                             abs=1e-3 * dnu)
+
+    def test_fitted_fov_does_not_snap_to_whole_sample_shifts(self):
+        from scipy.optimize import least_squares
+        from plumeIR.forward.base import apply_ils, apply_shift_offset
+        nu = 2085.0
+        wn = np.arange(1985.0, 2185.0, 1.0 / NPER_WN)
+        wm = np.arange(2020.0, 2150.0, 0.24106)           # MIDAC grid spacing
+        rng = np.random.default_rng(1)
+        centres = rng.uniform(1990.0, 2180.0, 80)
+        strength = 10 ** rng.uniform(-0.5, 2.0, 80)       # up to saturated
+        od = (strength[:, None] * 0.08 ** 2
+              / ((wn - centres[:, None]) ** 2 + 0.08 ** 2)).sum(axis=0)
+        F = np.exp(-od)
+
+        def model(p):
+            k = build(fov=p[0], max_opd=1.037, wn_center=nu, apod_type="triangle",
+                      trim_opd=1.037, trim_fov=0.2)
+            return p[2] * apply_shift_offset(apply_ils(F, k), wn, wm,
+                                             shift=p[1], offset=0.0)
+
+        true_fov = 0.0124                  # a half-sample shift at 2085 cm⁻¹
+        y = model((true_fov, -0.3, 1.0))
+        for start in (0.005, 0.021, 0.03):  # the old kernel: 0.001-0.0175
+            r = least_squares(lambda p: model(p) - y, [start, -0.25, 1.0],
+                              bounds=([0.001, -2.0, 0.5], [0.2, 2.0, 1.5]),
+                              x_scale="jac", ftol=1e-12, xtol=1e-12)
+            assert r.x[0] == pytest.approx(true_fov, rel=1e-3)
+
 
 class TestFovSmoothness:
 
@@ -121,7 +173,8 @@ class TestFovSmoothness:
         fov_edge = 2 * np.sqrt(2 * target / WN_CENTER)
 
         fovs = np.linspace(fov_edge * 0.995, fov_edge * 1.005, 41)
-        kernels = np.array([build(fov=f).kernel for f in fovs])
+        # trim_fov fixes the length, as every forward model does while fitting.
+        kernels = np.array([build(fov=f, trim_fov=fovs[-1]).kernel for f in fovs])
         deltas = np.abs(np.diff(kernels, axis=0)).max(axis=1)
 
         assert np.all(np.isfinite(deltas))
@@ -196,9 +249,11 @@ class TestWideFovSupport:
         assert k.opd_grid.size > NPER_WN ** 2
         assert np.allclose(np.diff(k.wn_grid), 1.0 / NPER_WN)
 
-    def test_usual_kernel_not_oversampled(self):
+    def test_minimum_oversampling(self):
+        """OPD sampling is converged whatever the support (NB ends in a step)."""
+        from plumeIR.forward.ils import _MIN_OVERSAMPLING
         k = build(fov=0.03, max_opd=1.037)
-        assert k.opd_grid.size == int(NPER_WN ** 2)
+        assert k.opd_grid.size == int(_MIN_OVERSAMPLING * NPER_WN ** 2)
 
     def test_fov_above_trim_fov_widens_support(self):
         narrow = build(fov=0.05, trim_opd=MAX_OPD, trim_fov=0.05).kernel.size
@@ -233,10 +288,42 @@ class TestPedestalAndTail:
         k = build(fov=0.03, max_opd=1.037, apod_type=apod, trim_opd=5.0 / 250.0)
         assert abs(k.tail_mass) < 1e-3
 
-    def test_triangle_tail_mass_at_default_support(self):
-        k = build(fov=0.03, max_opd=1.037, apod_type="triangle",
-                  trim_opd=1.037, trim_fov=0.2)
-        assert 0.003 < k.tail_mass < 0.006
+    @pytest.mark.parametrize("apod", ["triangle", "boxcar", "NB weak",
+                                      "NB medium", "Hann"])
+    @pytest.mark.parametrize("trim_fov", [0.015, 0.2])
+    def test_cut_mass_within_tolerance(self, apod, trim_fov):
+        """The core grows until the cut mass is within _TAIL_MASS_TOL, whether
+        the support is set by a held fov or by a fitted fov's bound."""
+        from plumeIR.forward.ils import _TAIL_MASS_TOL
+        k = build(fov=0.015, max_opd=1.037, wn_center=2085.0, apod_type=apod,
+                  trim_opd=1.037, trim_fov=trim_fov)
+        assert abs(k.tail_mass) <= _TAIL_MASS_TOL
+
+    def test_core_follows_line_shape_not_fov(self):
+        from plumeIR.forward.ils import core_support
+        tri = core_support("triangle", 1.037, NPER_WN)
+        assert 30.0 < tri < 45.0                       # 1/x² tails: ~38 cm-1
+        assert core_support("Hann", 1.037, NPER_WN) == pytest.approx(5.0 / 1.037,
+                                                                     abs=0.05)
+
+    @pytest.mark.parametrize("apod", ["triangle", "Hann"])
+    def test_spectrum_converged_in_support(self, apod):
+        """
+        A wider support no longer changes the convolved spectrum, for windows
+        that reach zero at max_opd.  (NB and boxcar end in a step; their 1/x
+        ringing does not converge in support, ~7e-3 of line depth between
+        ±5 and ±19 cm⁻¹, which is why the forward models give a held fov the
+        same support as a fitted one.)  Triangle at the old ±5-limb core:
+        3.7e-3; measured now 1.1e-4.
+        """
+        from plumeIR.forward.base import apply_ils
+        wn, F, inner = _line_spectrum()
+        kw = dict(fov=0.015, max_opd=1.037, wn_center=2760.0, apod_type=apod,
+                  trim_opd=1.037)
+        held = apply_ils(F, build(trim_fov=0.015, **kw))[inner]
+        fitted = apply_ils(F, build(trim_fov=0.2, **kw))[inner]
+        depth = (1.0 - fitted).max()
+        assert np.abs(held - fitted).max() / depth < 2e-4
 
     def test_tail_term_reproduces_wide_kernel_for_triangle(self):
         from plumeIR.forward.base import apply_ils
@@ -262,9 +349,29 @@ class TestKernelTrimFov:
         from plumeIR.forward.ils import kernel_trim_fov
         assert kernel_trim_fov(self._param(True)) == 0.2
 
-    def test_fixed_uses_value(self):
+    def test_fixed_uses_upper_bound(self):
+        """A held fov sizes the kernel like a fitted one (2026-11-14)."""
         from plumeIR.forward.ils import kernel_trim_fov
-        assert kernel_trim_fov(self._param(False)) == 0.03
+        assert kernel_trim_fov(self._param(False)) == 0.2
+
+    def test_fixed_unbounded_uses_value(self):
+        from plumeIR.forward.ils import kernel_trim_fov
+        assert kernel_trim_fov(self._param(False, upper=np.inf)) == 0.03
+
+    @pytest.mark.parametrize("apod", ["triangle", "boxcar", "NB medium"])
+    def test_held_and_fitted_fov_build_the_same_kernel(self, apod):
+        """
+        Regression (2026-11-14): a held fov sized the support from its value, a
+        fitted one from its 0.2 bound, so the same fov meant a ±4.9 or a
+        ±15 cm⁻¹ triangle kernel and the layer SO2 column moved 1.1%.
+        """
+        from plumeIR.forward.ils import kernel_trim_fov
+        kw = dict(fov=0.015, max_opd=1.037, wn_center=2085.0, apod_type=apod,
+                  trim_opd=1.037)
+        held = build(trim_fov=kernel_trim_fov(self._param(False, value=0.015)), **kw)
+        fitted = build(trim_fov=kernel_trim_fov(self._param(True, value=0.015)), **kw)
+        np.testing.assert_array_equal(held.kernel, fitted.kernel)
+        assert held.tail_mass == fitted.tail_mass
 
     def test_unbounded_follows_live_fov(self):
         from plumeIR.forward.ils import kernel_trim_fov
