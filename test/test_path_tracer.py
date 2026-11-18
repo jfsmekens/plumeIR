@@ -149,11 +149,11 @@ class TestSummaryAndWideTable:
         table, windows, params = _setup()
         rep = tracer_report(table, windows, params, _geometry())
         ratios = {("CO2", "SO2"): SimpleNamespace(intercept=1.9e21),
-                  ("H2SO4", "SO2"): SimpleNamespace(intercept=1.4)}
+                  ("H2SO4_aq", "SO2"): SimpleNamespace(intercept=1.4)}
         text = "\n".join(_tracer_lines(rep, ratios))
         assert "implied path    2.000 km (W5" in text
         assert "CO2/SO2" in text
-        assert "H2SO4/SO2" not in text          # an aerosol has no mixing ratio
+        assert "H2SO4_aq/SO2" not in text          # an aerosol has no mixing ratio
 
     def test_wide_table_gets_the_path_column(self, tmp_path: Path):
         from plumeIR.output import WIDE_NAME, write_results

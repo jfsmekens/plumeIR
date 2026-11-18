@@ -73,6 +73,20 @@ def _check_value(errors: list[str], where: str, key: Key, val: object,
     if kind == "window":
         _check_window(errors, where, val)
         return
+    if kind == "flags":
+        if isinstance(val, bool):
+            return
+        items = [val] if isinstance(val, str) else val
+        if not isinstance(items, (list, tuple)) or \
+                not all(isinstance(v, str) for v in items):
+            _e(errors, f"{where}: expected {key.expectation(name)}, got {val!r}")
+            return
+        if key.choices is not None:
+            unknown = [v for v in items if v not in key.choices]
+            if unknown:
+                _e(errors, f"{where}: unknown {key.item} {unknown}; valid: "
+                           f"{list(key.choices)}")
+        return
     if kind == "list":
         items = [val] if isinstance(val, str) else val
         if not isinstance(items, (list, tuple)) or \
@@ -230,6 +244,37 @@ def _as_list(value: object) -> list:
     if isinstance(value, str):
         return [value]
     return list(value) if isinstance(value, list) else []
+
+
+def _warn_aerosol_switches(fit: dict, retrieval: dict) -> None:
+    """
+    Warn when ``fit_size_aero`` / ``fit_aero_composition`` name an aerosol
+    the window does not have (the name has no effect there), or ask for a
+    composition fit of an aerosol without a composition parameter (only
+    ``H2SO4_aq`` has one).  A ``*RETRIEVAL`` list naming an aerosol of no
+    window is reported once per window that inherits it.
+    """
+    from plumeIR import species as _species
+    label = fit.get("_label", "FIT?")
+    aero = set(_as_list(fit.get("plume_aero")))
+    for key in ("fit_size_aero", "fit_aero_composition"):
+        value = fit.get(key)
+        source = label
+        if value is None:
+            value, source = retrieval.get(key), "RETRIEVAL"
+        if value is None or isinstance(value, bool):
+            continue
+        names = _as_list(value)
+        absent = [n for n in names if n not in aero]
+        if absent and source == label:
+            logger.warning("%s.%s names %s, not in this window's plume_aero: no effect",
+                           label, key, absent)
+        if key == "fit_aero_composition":
+            no_comp = [n for n in names if n in aero and _species.is_aerosol(n)
+                       and not any(c.parameter for c in _species.get(n).components)]
+            if no_comp:
+                logger.warning("%s.%s: %s have no composition parameter (only H2SO4_aq "
+                               "has one): no effect", source, key, no_comp)
 
 
 def _warn_atm_temp_with_h2o(fit: dict, geom: dict, gtype: str,
@@ -410,7 +455,7 @@ def validate(raw: dict) -> None:
     # ------------------------------------------------------------------
     # Per-key checks from the catalogue
     # ------------------------------------------------------------------
-    for section in ("DATA", "MODEL", "RETRIEVAL", "PLOT"):
+    for section in ("DATA", "MODEL", "PREPROCESS", "RETRIEVAL", "PLOT"):
         _check_section(errors, raw.get(section, {}), section, section, known)
     if known is not None:
         _check_section(errors, geom, "GEOMETRY", "GEOMETRY", known)
@@ -473,6 +518,7 @@ def validate(raw: dict) -> None:
                 target_windows.setdefault(t, []).append(label)
 
         _warn_atm_temp_with_h2o(fit, geom, gtype, both, t_list)
+        _warn_aerosol_switches(fit, raw.get("RETRIEVAL", {}) or {})
 
         # continuum: the gases must also be gases of this window (the
         # catalogue checks they have a continuum treatment at all).

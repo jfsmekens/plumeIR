@@ -229,9 +229,62 @@ def test_converges_with_single_beam_scale():
 
 def test_rc3_settings_stop_short():
     # The settings up to rc3 stop early: the unscaled xtol test compares each
-    # step with ||x|| ~ 1e5, set by the baseline.  Measured: SO2 1.974,
-    # rmse 5.5 against 9e-10.  Keeps the reason for the defaults on record.
+    # step with ||x|| ~ 1e5, set by the baseline.  Measured while the ILS
+    # kernel carried the FOV shift (fov and nu_shift partly collinear): SO2
+    # 1.974, rmse 5.5 against 9e-10.  Since convention A (2026-11-16, the FOV
+    # only broadens) this case is well conditioned and the early stop costs
+    # no column (SO2 2.0 to 5 digits), but it still stops ~1e4 short in rmse
+    # (6e-7 against 4.5e-11).  Keeps the reason for the defaults on record.
     forward, params, measured = _line_forest_case()
     res = NonLinearLeastSquares(ftol=1e-6, xtol=1e-6, x_scale=1.0,
                                 plume_restart_scaling=None).fit(forward, params, measured)
-    assert abs(res.value("SO2") - 2.0) > 1e-2
+    ref = NonLinearLeastSquares(plume_restart_scaling=None).fit(forward, params, measured)
+    assert res.rmse > 100.0 * ref.rmse
+
+
+# ---------------------------------------------------------------------------
+# Errors when a parameter has no effect (2026-11-16)
+# ---------------------------------------------------------------------------
+
+class TestUnconstrainedParameter:
+    """An aerosol at zero leaves its size parameter without effect; the
+    errors of every other parameter must survive (emission validation run:
+    230 of 300 spectra lost all errors before)."""
+
+    def test_inverse_normal(self):
+        from plumeIR.retrieval.nlls import _inverse_normal
+        rng = np.random.default_rng(0)
+        j = rng.normal(size=(50, 3))
+        np.testing.assert_array_equal(_inverse_normal(j), np.linalg.inv(j.T @ j))  # unchanged
+        dead = j.copy()
+        dead[:, 1] = 0.0
+        cov = _inverse_normal(dead)
+        assert np.isnan(cov[1]).all() and np.isnan(cov[:, 1]).all()
+        live = dead[:, [0, 2]]
+        np.testing.assert_allclose(cov[np.ix_([0, 2], [0, 2])], np.linalg.inv(live.T @ live),
+                                   rtol=1e-12)
+        tiny = j.copy()
+        tiny[:, 1] *= 1e-30                       # an effect far below the others
+        cov = _inverse_normal(tiny)
+        assert np.isfinite(cov).all() and cov[1, 1] > 1e55
+        np.testing.assert_allclose(cov[0, 0], np.linalg.inv(j.T @ j)[0, 0], rtol=1e-10)
+
+    def test_fit_keeps_the_other_errors(self):
+        x = np.linspace(0.0, 1.0, 100)
+
+        class Forward:
+            wn_meas = x
+
+            def __call__(self, p):        # p = [offset, slope, r0]; r0 has no effect
+                return p[0] + p[1] * x + 0.0 * p[2]
+
+        params = ParameterSet([
+            Parameter("poly0", 0.5, True, (-5.0, 5.0), ParameterKind.POLYNOMIAL),
+            Parameter("poly1", 0.5, True, (-5.0, 5.0), ParameterKind.POLYNOMIAL),
+            Parameter("r0_ASH", 2.0, True, (0.1, 10.0), ParameterKind.AERO_PLUME),
+        ])
+        measured = 1.0 + 2.0 * x + np.random.default_rng(1).normal(0, 0.01, x.size)
+        res = NonLinearLeastSquares().fit(Forward(), params, measured)
+        assert res.success and res.perror is not None
+        assert np.isnan(res.error("r0_ASH"))
+        assert 0 < res.error("poly0") < 0.01 and 0 < res.error("poly1") < 0.02

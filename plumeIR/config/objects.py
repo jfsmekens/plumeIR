@@ -133,17 +133,6 @@ class LayerGeometry:
     no_gas : bool
         Derive plume transmittance using a reference "no-gas" spectrum
         rather than subtracting a background.
-    subtract_self : bool
-        Subtract the instrument self-emission background from each single beam
-        before fitting.  The background is additive in the spectrum's native
-        units, so leaving it in biases retrieved columns — the multiplicative
-        background polynomial can only partly absorb it.  Defaults to ``False``
-        so that configs written before this option existed keep their
-        behaviour; enable it whenever the dataset ships a self spectrum.
-    self_file : Path or None
-        Explicit path to a self-emission spectrum, overriding discovery.
-        ``None`` → find files whose stem contains ``'self'`` in ``data_dir``
-        (the v2 convention).
     path_tracer : str or None
         Ambient gas whose fitted column checks ``pathlength`` after the fits
         (:mod:`plumeIR.path_tracer`); a diagnostic, it changes no fit.
@@ -161,8 +150,6 @@ class LayerGeometry:
     fit_source_temp:     bool  = default("GEOMETRY", "fit_source_temp")
     source_temp:         float = default("GEOMETRY", "source_temp")
     no_gas:              bool  = default("GEOMETRY", "no_gas")
-    subtract_self:       bool  = default("GEOMETRY", "subtract_self", "layer")
-    self_file:           Path | None = default("GEOMETRY", "self_file")
     path_tracer:         str | None  = default("GEOMETRY", "path_tracer")
 
 
@@ -235,8 +222,6 @@ class EmissionGeometry:
         negligible term when aerosol is present.
 
         See ``EmissionForwardModel._scattering_source``.
-    subtract_self : bool
-        Subtract self-emission background spectrum before fitting.
     fit_difference : bool
         Fit the difference spectrum (plume − clear sky).  Default False:
         absolute radiance is the validated retrieval.  Difference mode is not
@@ -265,11 +250,49 @@ class EmissionGeometry:
     dt_dist:         float = default("GEOMETRY", "dt_dist")
     h2o_scaling:     int   = default("GEOMETRY", "h2o_scaling")
     model_aero_scattering: bool = default("GEOMETRY", "model_aero_scattering")
-    subtract_self:   bool  = default("GEOMETRY", "subtract_self", "emission")
     fit_difference:  bool  = default("GEOMETRY", "fit_difference")
     use_bbt:         bool  = default("GEOMETRY", "use_bbt")
     bb_drift:        bool  = default("GEOMETRY", "bb_drift")
     clear_drift:     bool  = default("GEOMETRY", "clear_drift")
+
+
+@dataclass(frozen=True)
+class PreprocessConfig:
+    """
+    What is done to the spectra before the fits (``*PREPROCESS``).
+
+    The defaults depend on the geometry; build it with
+    :func:`plumeIR.config.builder.build_preprocess`.  The instance defaults are
+    the layer geometry's.
+
+    Parameters
+    ----------
+    subtract_self : bool
+        Layer: subtract the instrument self-emission background (a spectrum
+        taken looking at cold sky) from each single beam.  Emission: ignored
+        with a warning, since the blackbody calibration already removes the
+        instrument radiance.  Moved from ``*GEOMETRY`` 2026-11-15.
+    self_file : Path or None
+        Layer: an explicit self-emission spectrum, overriding discovery.
+        ``None`` → files whose stem contains ``'self'`` in ``data_dir`` (the v2
+        convention).
+    background : {'off', 'report', 'apply'}
+        Layer: the additive background measured from the opaque bands
+        (:mod:`plumeIR.preprocess.background`).  ``apply`` subtracts it,
+        unclipped, in place of the self spectrum.
+    registration : {'off', 'report', 'apply'}
+        Layer and emission: the wavenumber shift and scale measured by
+        cross-correlation (:mod:`plumeIR.preprocess.registration`).
+        ``apply`` corrects each spectrum's wavenumber axis before the fits.
+    reference_spectra : int
+        Layer: the median top hull of the first this-many spectra is the
+        reference for the relative scale and temperature.
+    """
+    subtract_self:       bool        = default("PREPROCESS", "subtract_self", "layer")
+    self_file:           Path | None = default("PREPROCESS", "self_file")
+    background:          str         = default("PREPROCESS", "background")
+    registration:        str         = default("PREPROCESS", "registration")
+    reference_spectra:   int         = default("PREPROCESS", "reference_spectra")
 
 
 @dataclass(frozen=True)
@@ -338,11 +361,13 @@ class Retrieval:
         Apply parameter bounds during optimisation.
     update_params : bool
         Seed each fit with the result of the previous spectrum.
-    fit_size_aero : bool
-        Fit aerosol effective radius (``r0_{SPECIES}``) as a free parameter.
-    fit_aero_composition : bool
+    fit_size_aero : bool or tuple of str
+        Fit aerosol effective radius (``r0_{SPECIES}``) as a free parameter:
+        for every aerosol (True / False) or for those named (2026-11-17).
+        A window's own value overrides it (``FitWindowConfig``).
+    fit_aero_composition : bool or tuple of str
         Fit aerosol composition (``wt_{SPECIES}``, weight fraction) as a free
-        parameter.  Currently only meaningful for H2SO4.  The 2D (r0, wt)
+        parameter, likewise.  Currently only meaningful for H2SO4.  The 2D (r0, wt)
         LUT is always built regardless; this flag controls whether composition
         is varied or fixed at the ``*DEFAULTS`` value at run time.
     use_babs_aero : bool
@@ -376,8 +401,8 @@ class Retrieval:
     use_bounds:       bool  = default("RETRIEVAL", "use_bounds")
     update_params:    bool  = default("RETRIEVAL", "update_params")
 
-    fit_size_aero:        bool  = default("RETRIEVAL", "fit_size_aero")
-    fit_aero_composition: bool  = default("RETRIEVAL", "fit_aero_composition") # adds wt_{SPECIES} as a free parameter
+    fit_size_aero:        bool | tuple[str, ...] = default("RETRIEVAL", "fit_size_aero")
+    fit_aero_composition: bool | tuple[str, ...] = default("RETRIEVAL", "fit_aero_composition") # adds wt_{SPECIES} as a free parameter
     use_babs_aero:        bool  = default("RETRIEVAL", "use_babs_aero")
 
     fit_fov:          bool  = default("RETRIEVAL", "fit_fov")
@@ -434,6 +459,13 @@ class FitWindowConfig:
         Per-window override of ``LayerGeometry.fit_atm_temp``.
     model_gas_emission : bool or None
         Per-window override of ``LayerGeometry.model_gas_emission``.
+    fit_size_aero : bool, tuple of str or None
+        Per-window override of ``RetrievalConfig.fit_size_aero``: True /
+        False for every aerosol in the window, or the aerosols whose
+        effective radius is fitted (the others held); ``None`` inherits.
+    fit_aero_composition : bool, tuple of str or None
+        Per-window override of ``RetrievalConfig.fit_aero_composition``,
+        likewise.
     continuum_gases : tuple[str, ...]
         Gases in this window that use the 2-D (T, VMR) continuum LUT instead
         of simple linear column scaling.  Physically a property of the window,
@@ -478,6 +510,8 @@ class FitWindowConfig:
     fit_gas_temp:       bool | None = None
     fit_atm_temp:       bool | None = None
     model_gas_emission: bool | None = None
+    fit_size_aero:      bool | tuple[str, ...] | None = None
+    fit_aero_composition: bool | tuple[str, ...] | None = None
     continuum_gases:    tuple[str, ...] = ()
     plume_temp_from:    str | None = None
     atm_temp_from:      str | None = None

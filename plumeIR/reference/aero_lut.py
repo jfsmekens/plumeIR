@@ -29,6 +29,8 @@ from pathlib import Path
 
 import numpy as np
 
+from plumeIR import species as _species
+from plumeIR.constants import H2SO4_AQ
 from plumeIR.standards import (
     AERO_R0_NODES as _R0_NODES_UM,
     H2SO4_R0_NODES as _H2SO4_R0_NODES_UM,
@@ -42,17 +44,17 @@ logger = logging.getLogger(__name__)
 # plumeIR aerosol species → ARIA refractive-index category key (mieEODG
 # ``ARIA_DEFAULTS``).  These are the 1-D species (single refractive index);
 # H2SO4 is 2-D (r0, weight-fraction) and handled by ``build_h2so4_2d``.
+# The refractive-index source of each 1-D aerosol (the registry,
+# plumeIR.species); H2SO4_aq has its own 2-D build (build_h2so4_2d).
 _SPECIES_TO_ARIA: dict[str, str] = {
-    "ASH":   "volcanic_ash",
-    "DUST":  "sand_and_dust",
-    "ICE":   "water_and_ice/ice",
-    "WATER": "water_and_ice/water",
-    "HNO3":  "acids/nitric",
+    name: _species.get(name).ri_source for name in _species.aerosols()
+    if _species.get(name).ri_source and name != H2SO4_AQ
 }
 
 # Species in the registry with no usable ARIA refractive-index source.  Treated
 # like SiF4: an explicit error rather than a silent placeholder.
-_DEFERRED_AEROSOLS: frozenset = frozenset({"OC", "SOOT", "AEROSOL"})
+_DEFERRED_AEROSOLS: frozenset = frozenset(
+    name for name in _species.aerosols() if not _species.get(name).ri_source)
 
 
 #: Wavenumber spacing [cm⁻¹] for the Mie calculation.
@@ -398,7 +400,7 @@ class AerosolLUT:
             raise ReferenceComputationError(
                 f"No ARIA refractive-index source for aerosol '{species}'{deferred}. "
                 f"Supported 1-D species: {sorted(_SPECIES_TO_ARIA)}; "
-                f"H2SO4 uses build_h2so4_2d."
+                f"{H2SO4_AQ} uses build_h2so4_2d."
             )
 
         # Load the refractive index from the ARIA database onto the model grid,
@@ -544,7 +546,7 @@ class AerosolLUT:
             " (+absorption)" if with_absorption else "",
         )
         return cls(
-            species="H2SO4", wn=wn_mie, r0_nodes_um=r0_nodes_um,
+            species=H2SO4_AQ, wn=wn_mie, r0_nodes_um=r0_nodes_um,
             od_table=od_ext, ref_mass_g_m2=ref_mass_g_m2,
             wt_nodes=wt_nodes, od_table_abs=od_abs, wn_model=wn,
         )

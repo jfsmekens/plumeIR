@@ -237,7 +237,7 @@ def subtract_self_emission(
 
 def preprocess_layer(
     spectra: list[Spectrum],
-    geometry,
+    preprocess,
     data_config,
     clip_mode: str = "cutoff",
 ) -> list[Spectrum]:
@@ -245,14 +245,15 @@ def preprocess_layer(
     Apply layer-geometry preprocessing to a run's spectra.
 
     Currently self-emission subtraction, controlled by
-    ``LayerGeometry.subtract_self``.  A no-op when the flag is off, so the
-    stage is always safe to call.
+    ``PreprocessConfig.subtract_self`` (``*PREPROCESS``; in ``*GEOMETRY``
+    until 2026-11-15).  A no-op when the flag is off, so the stage is always
+    safe to call.
 
     Parameters
     ----------
     spectra : list of Spectrum
         Scene spectra, in acquisition order.
-    geometry : LayerGeometry
+    preprocess : PreprocessConfig
         Supplies ``subtract_self`` and the optional ``self_file`` override.
     data_config : DataConfig
         Supplies ``data_dir`` and ``filter_ext`` for discovery.
@@ -271,19 +272,19 @@ def preprocess_layer(
         This is a hard error rather than a warning: silently fitting raw single
         beams is exactly the bias the flag exists to remove.
     """
-    if not getattr(geometry, "subtract_self", False):
+    if not preprocess.subtract_self:
         return spectra
 
     paths = find_self_spectra(
         data_config.data_dir,
-        self_file=getattr(geometry, "self_file", None),
+        self_file=preprocess.self_file,
         filter_ext=data_config.filter_ext,
     )
     if not paths:
         raise PlumeIRError(
             f"subtract_self is enabled but no self-emission spectrum was found "
             f"in '{data_config.data_dir}'. Expected a file with 'self' in its "
-            f"name, or set GEOMETRY.self_file explicitly (or subtract_self: "
+            f"name, or set PREPROCESS.self_file explicitly (or subtract_self: "
             f"False to fit raw single beams)."
         )
 

@@ -22,7 +22,7 @@ from plumeIR.config.builder import build_data_config
 from plumeIR.exceptions import PlumeIRError
 from plumeIR.config.objects import (
     DataConfig, EmissionGeometry, FitWindowConfig, GeometryType,
-    LayerGeometry, ModelConfig, Retrieval, SolarGeometry,
+    LayerGeometry, ModelConfig, PreprocessConfig, Retrieval, SolarGeometry,
 )
 from plumeIR.parameters.parameter import Parameter, ParameterKind, ParameterSet
 from plumeIR.pipeline import run_from_config
@@ -103,6 +103,7 @@ def _fake_cfg():
         "data":      DataConfig(data_dir=Path("/d")),
         "model":     ModelConfig(),
         "geometry":  _layer(),
+        "preprocess": PreprocessConfig(),
         "retrieval": Retrieval(geometry_type=GeometryType.LAYER),
         "windows":   [window],
         "params":    [pset],

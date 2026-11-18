@@ -52,8 +52,9 @@ from plumeIR.retrieval.results import (
     COL_SUCCESS, COL_WINDOW, ResultsTable,
 )
 from plumeIR.spectra.spectrum import SpectrumType
+from plumeIR.analysis.data import ambient_column
 from plumeIR.standards import BACKGROUND_VMR
-from plumeIR.units import molec_cm2_to_g_m2, rh_to_vmr, vmr_to_scd
+from plumeIR.units import molec_cm2_to_g_m2
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,7 @@ def fit_ratio(
     sx: np.ndarray | None = None,
     sy: np.ndarray | None = None,
     method: str = "siegel",
+    r: np.ndarray | float = 0.0,
 ) -> RatioFit | None:
     """
     Regress ``y`` on ``x`` with a free intercept.
@@ -120,6 +122,9 @@ def fit_ratio(
         retained error is finite and positive; otherwise ODR is unweighted.
     method : str
         ``'siegel'``, ``'theil'`` or ``'odr'``.
+    r : np.ndarray or float
+        Correlation of the errors of ``x`` and ``y`` (per point, or one
+        value), for weighted ODR; 0 for species fitted in different windows.
 
     Returns
     -------
@@ -156,11 +161,12 @@ def fit_ratio(
     # ODR: York et al. (2004), weighted when every retained error is usable.
     sxo = None if sx is None else np.asarray(sx, dtype=float)[ok]
     syo = None if sy is None else np.asarray(sy, dtype=float)[ok]
+    ro = np.nan_to_num(np.broadcast_to(np.asarray(r, dtype=float), ok.shape)[ok], nan=0.0)
     weighted = (sxo is not None and syo is not None
                 and np.all(np.isfinite(sxo)) and np.all(sxo > 0)
                 and np.all(np.isfinite(syo)) and np.all(syo > 0))
     try:
-        line = york_fit(xo, yo, sxo, syo) if weighted else york_fit(xo, yo)
+        line = york_fit(xo, yo, sxo, syo, ro) if weighted else york_fit(xo, yo)
     except RegressionError as exc:
         logger.warning("ODR ratio fit failed: %s", exc)
         return None
@@ -172,6 +178,29 @@ def fit_ratio(
 # =============================================================================
 # Run state
 # =============================================================================
+
+#: Error correlations are clipped to ±this (York needs |ρ| < 1).
+MAX_CORRELATION = 0.999
+
+
+def fit_correlation(fit, a: str, b: str) -> float:
+    """
+    Correlation of the errors of parameters ``a`` and ``b`` in one fit, from
+    its covariance; NaN when it has none or did not vary both.
+
+    Parameters
+    ----------
+    fit : FitResult
+    a, b : str
+    """
+    names = list(fit.varied_names)
+    c = fit.covariance
+    if c is None or a not in names or b not in names:
+        return np.nan
+    i, j = names.index(a), names.index(b)
+    v = c[i, i] * c[j, j]
+    return float(c[i, j] / np.sqrt(v)) if np.isfinite(v) and v > 0 else np.nan
+
 
 def _column_targets(targets: Iterable[str]) -> list[str]:
     """Targets that are species with a column (not diagnostics like ``gas_temp``)."""
@@ -276,6 +305,10 @@ class RunState:
         self._err: dict[str, list[float]] = {sp: [] for sp in self.targets}
         self._is_aerosol: dict[str, bool] = {sp: sp in POSSIBLE_AEROSOLS
                                              for sp in self.targets}
+        # Target window of each species, and the error correlation of each
+        # ratio whose two species share one (from the fit covariance).
+        self._window_of: dict[str, str] = {}
+        self._rho: dict[tuple[str, str], list[float]] = {p: [] for p in self.ratios}
         self._sorted: tuple[int, np.ndarray] | None = None
         self._fit_cache: dict = {}
 
@@ -377,6 +410,14 @@ class RunState:
                        for g in w.dual_gases if g in w.targets}
         state.window_labels = list(run.fits.windows)
         state.archive = run.fits
+        if run.fits.has_covariance:
+            for pair in state.ratios:
+                w = state._shared_window(pair)
+                if w is not None and w in run.fits.windows:
+                    try:
+                        state._rho[pair] = list(run.fits.correlation(w, *pair))
+                    except KeyError:
+                        pass
         state.run_dir = run.run_dir
         if len(run.fits):
             state.select(0)
@@ -467,19 +508,26 @@ class RunState:
         rows = ResultsTable.from_fits(fits, self._windows, self._params,
                                       self._geometries).targets()
         sid = fits[0].spectrum_id if fits else str(item.index)
-        self._add_rows(rows, item.index, sid)
+        self._add_rows(rows, item.index, sid, {fr.window_label: fr for fr in fits})
         for fr in fits:
             self.latest_fits[fr.window_label] = fr
         self.latest_spectrum = item.spectrum
         if item.n_spectra:
             self.n_spectra = item.n_spectra
 
-    def _add_rows(self, rows: pd.DataFrame, position: int, sid: str) -> None:
-        """Record one spectrum's target rows; a failed fit records NaN."""
+    def _add_rows(self, rows: pd.DataFrame, position: int, sid: str,
+                  fits: dict | None = None) -> None:
+        """
+        Record one spectrum's target rows; a failed fit records NaN.  With
+        its fits (by window label), the error correlation of every ratio
+        whose species share a window.
+        """
         self._order.append(int(position))
         self._ids.append(str(sid))
         for sp in self.targets:
             sel = rows[rows[COL_SPECIES] == sp]
+            if not sel.empty:
+                self._window_of.setdefault(sp, str(sel[COL_WINDOW].iloc[0]))
             if sel.empty or not bool(sel[COL_SUCCESS].iloc[0]):
                 self._scd[sp].append(np.nan)
                 self._err[sp].append(np.nan)
@@ -489,8 +537,17 @@ class RunState:
             self._err[sp].append(float(r[COL_SCD_ERR]))
             if r[COL_KIND] == "AERO_PLUME":
                 self._is_aerosol[sp] = True
+        for pair in self.ratios:
+            w = self._shared_window(pair)
+            fr = None if (w is None or fits is None) else fits.get(w)
+            self._rho[pair].append(np.nan if fr is None else fit_correlation(fr, *pair))
         self.latest_id = str(sid)
         self.latest_position = int(position)
+
+    def _shared_window(self, pair: tuple[str, str]) -> str | None:
+        """The window both species of a ratio are fitted in, or ``None``."""
+        wy, wx = self._window_of.get(pair[0]), self._window_of.get(pair[1])
+        return wy if wy is not None and wy == wx else None
 
     # ------------------------------------------------------------------
     # Reading
@@ -579,6 +636,18 @@ class RunState:
         x, sx = self.column(pair[1], last, mass)
         return x, y, sx, sy
 
+    def ratio_correlation(self, pair: tuple[str, str], last: int | None = None) -> np.ndarray:
+        """
+        Correlation of the errors of a ratio's two columns, in input order:
+        from the fit covariance where both are fitted in one window, else 0.
+        """
+        rho = self._rho.get(tuple(pair))
+        if rho is None or len(rho) != self.n_received:
+            n = self.n_received if last is None else min(last, self.n_received)
+            return np.zeros(n)
+        r = np.nan_to_num(self._take(rho, last), nan=0.0)
+        return np.clip(r, -MAX_CORRELATION, MAX_CORRELATION)
+
     def newest_point(self, pair: tuple[str, str]) -> tuple[float, float]:
         """
         The ratio's ``(x, y)`` for the spectrum that arrived last, or for the
@@ -616,21 +685,15 @@ class RunState:
         mass : bool
             In g m⁻² instead of molec cm⁻².
         """
-        geom = self.geometry
-        if not isinstance(geom, LayerGeometry) or species in POSSIBLE_AEROSOLS:
+        # One computation of the ambient column, shared with the composition
+        # analysis.
+        if not isinstance(self.geometry, LayerGeometry) or species in POSSIBLE_AEROSOLS:
             return np.nan
         if species in self.dual:
             return 0.0
-        if species == "H2O" and "H2O" not in self.background_vmr:
-            if self.rh is None:
-                return np.nan
-            vmr = float(rh_to_vmr(self.rh, pres=geom.atm_pres, temp=geom.atm_temp))
-        elif species in self.background_vmr:
-            vmr = self.background_vmr[species]
-        else:
+        column = ambient_column(species, self.geometry, self.background_vmr, self.rh)
+        if not np.isfinite(column):
             return np.nan
-        column = float(vmr_to_scd(vmr, geom.pathlength, temp=geom.atm_temp,
-                                  pres=geom.atm_pres))
         return float(molec_cm2_to_g_m2(column, species)) if mass else column
 
     def ratio_background(self, pair: tuple[str, str]) -> tuple[float, float]:
@@ -651,7 +714,7 @@ class RunState:
         if hit is not None and hit[0] == self.n_received:
             return hit[1]
         x, y, sx, sy = self.ratio_points(pair, last)
-        fit = fit_ratio(x, y, sx, sy, self.regression)
+        fit = fit_ratio(x, y, sx, sy, self.regression, self.ratio_correlation(pair, last))
         self._fit_cache[key] = (self.n_received, fit)
         return fit
 

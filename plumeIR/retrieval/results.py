@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from plumeIR.constants import WEIGHTS
+from plumeIR.constants import LEGACY_AEROSOL_NAMES, WEIGHTS
 from plumeIR.config.objects import DUAL_ATM_SUFFIX, FitWindowConfig
 from plumeIR.parameters.parameter import Parameter, ParameterKind, ParameterSet
 from plumeIR.units import molec_cm2_to_g_m2, molec_cm2_to_ppmm
@@ -235,6 +235,30 @@ _COLUMN_SCALING_KINDS = (ParameterKind.GAS_ATM, ParameterKind.GAS_PLUME,
                          ParameterKind.AERO_PLUME)
 
 
+def _rename_legacy_aerosols(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Rows of a former aerosol name (``H2SO4``, ``HNO3``, until 2026-11-17),
+    renamed to the current one (``H2SO4_aq``, ``HNO3_aq``), with its ``r0_`` /
+    ``wt_`` parameters.  Only aerosol rows (``kind`` ``AERO_PLUME``) are
+    touched: gas ``HNO3`` keeps its name.  Keeps old run folders readable
+    against their configs, which the parser renames the same way.
+    """
+    if COL_KIND not in df or COL_SPECIES not in df:
+        return df
+    aero = (df[COL_KIND] == ParameterKind.AERO_PLUME.name) & df[COL_SPECIES].isin(
+        list(LEGACY_AEROSOL_NAMES))
+    if not aero.any():
+        return df
+    df = df.copy()
+    old = df.loc[aero, COL_SPECIES]
+    new = old.map(LEGACY_AEROSOL_NAMES)
+    params = df.loc[aero, COL_PARAM].astype(str)
+    df.loc[aero, COL_PARAM] = [p[: len(p) - len(o)] + n if p.endswith(o) else p
+                               for p, o, n in zip(params, old, new)]
+    df.loc[aero, COL_SPECIES] = new
+    return df
+
+
 def _species_of(name: str) -> str:
     """Species a parameter refers to: strip the ``r0_`` / ``wt_`` aerosol prefix."""
     for prefix in ("r0_", "wt_"):
@@ -359,7 +383,7 @@ class ResultsTable:
         for col in (COL_VARIED, COL_TARGET, COL_SUCCESS):
             if col in df.columns:
                 df[col] = df[col].isin([True, "True", "TRUE", 1, "1"])
-        return cls(df)
+        return cls(_rename_legacy_aerosols(df))
 
     # ------------------------------------------------------------------
     # Accessors
@@ -460,6 +484,57 @@ class ResultsTable:
         src = self.targets() if targets_only else self.df
         return src.pivot_table(index=COL_SPECTRUM, columns=COL_SPECIES,
                                values=quantity, aggfunc="first")
+
+    def aerosol_components(self) -> pd.DataFrame:
+        """
+        Molecular content of each target aerosol, per spectrum.
+
+        For an aerosol with molecular components (``plumeIR.species``): a
+        solution (``H2SO4_aq``: the acid at its ``wt_`` parameter's weight
+        fraction in that spectrum, water the rest; ``HNO3_aq`` at its fixed
+        fraction) or a pure particle (``WATER``, ``ICE``: H2O).  Columns, for
+        aerosol ``A`` and component ``X``: ``A[X]_g_m2`` (mass column),
+        ``A[X]_g_m2_err``, ``A[X]_molec_cm2`` (molecular column, comparable
+        with a gas slant column: acid moles against SO2) and
+        ``A[X]_molec_cm2_err``.  The errors scale the particle mass error by
+        the fraction: exact for a fixed fraction, without the fraction's own
+        error where it is fitted (the fit covariance is not in the results).
+
+        Returns
+        -------
+        pandas.DataFrame
+            Indexed by ``spectrum_id``; no column for an aerosol without
+            molecular content (ash, dust) or without a target.
+        """
+        from plumeIR import species as _sp
+        t = self.targets()
+        frames = []
+        for name in pd.unique(t[COL_SPECIES]):
+            if not _sp.is_aerosol(name) or not _sp.get(name).components:
+                continue
+            rows = t[(t[COL_SPECIES] == name) & (t[COL_PARAM] == name)]
+            mass = rows.set_index(COL_SPECTRUM)[COL_SCD].astype(float)
+            err = rows.set_index(COL_SPECTRUM)[COL_SCD_ERR].astype(float)
+            wt = None
+            param = next((c.parameter for c in _sp.get(name).components if c.parameter), None)
+            if param is not None:
+                windows = set(rows[COL_WINDOW])
+                w = self.df[(self.df[COL_PARAM] == param) & self.df[COL_WINDOW].isin(windows)]
+                wt = w.drop_duplicates(COL_SPECTRUM).set_index(COL_SPECTRUM)[COL_VALUE] \
+                    .astype(float).reindex(mass.index).to_numpy()
+            frac = _sp.component_fractions(name, wt)
+            out = {}
+            for formula, f in frac.items():
+                k = _sp.N_A / _sp.MOLAR_MASS[formula] / 1e4
+                key = f"{name}[{formula}]"
+                out[f"{key}_g_m2"] = mass.to_numpy() * f
+                out[f"{key}_g_m2_err"] = err.to_numpy() * f
+                out[f"{key}_molec_cm2"] = mass.to_numpy() * f * k
+                out[f"{key}_molec_cm2_err"] = err.to_numpy() * f * k
+            frames.append(pd.DataFrame(out, index=mass.index))
+        if not frames:
+            return pd.DataFrame(index=pd.Index([], name=COL_SPECTRUM))
+        return pd.concat(frames, axis=1)
 
     def to_csv(self, path: str | Path) -> None:
         """Write the long-format table to CSV."""

@@ -82,7 +82,7 @@ def _make_aero_lut_2d(n_r0: int = 6, n_wt: int = 5, n_wn: int = 40) -> AerosolLU
     w_fac    = np.linspace(0.8, 1.2, n_wt)
     od_table = np.einsum("i,j->ij", r_fac, w_fac)[:, :, np.newaxis] * np.ones(n_wn)
     return AerosolLUT(
-        species="H2SO4", wn=wn, r0_nodes_um=r0_nodes,
+        species="H2SO4_aq", wn=wn, r0_nodes_um=r0_nodes,
         od_table=od_table, ref_mass_g_m2=1e-3, wt_nodes=wt_nodes,
     )
 

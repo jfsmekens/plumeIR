@@ -1,6 +1,6 @@
 # plumeIR
 
-> **Pre-release (3.0.0rc4).** This is a preview of plumeIR v3 on the
+> **Pre-release (3.0.0rc5).** This is a preview of plumeIR v3 on the
 > `v3-preview` branch, published so it can be tried before release. Results
 > and config keys may still change. The stable version is v2.0, on `main`
 > and at tag `v2.0`.
@@ -26,6 +26,7 @@ changed retrieved columns ([CHANGELOG.md](CHANGELOG.md)).
 - [The command line](#the-command-line)
 - [Config files](#config-files)
 - [Output](#output)
+- [Composition analysis](#composition-analysis)
 - [Validation](#validation)
 - [Citing](#citing)
 - [Licence](#licence)
@@ -45,6 +46,7 @@ changed retrieved columns ([CHANGELOG.md](CHANGELOG.md)).
 - MIDAC (`.spc`) and Bruker OPUS instruments. ILS settings (maximum OPD, apodisation) are read from the files.
 - Plume aerosols with Mie optical properties: sulphuric acid, volcanic ash and the other entries of mieEODG's refractive-index database.
 - A command-line program with a live display of the fits, the column time series and the gas-ratio regressions. A finished run can be reopened in an inspector.
+- A composition analysis of finished runs: gas ratios, molar and mass fractions, and how they change through the run.
 
 **Shipped but experimental** (solar, optimal estimation and dual gases log a warning at run time)
 - Solar occultation geometry: the forward model and references are built, but there is no preprocessing and it has never been run on real solar data.
@@ -182,12 +184,26 @@ To reopen a finished run and step through its spectra:
 plumeIR plumeIR_runs/emission_20261113-101500 --inspect
 ```
 
+To analyse the plume composition of a run as it finishes, add `--analyse`; for
+a run already on disk, use `plumeIR analyse` ([Composition
+analysis](#composition-analysis)):
+
+```bash
+plumeIR examples/layer.ini --parallel --analyse
+```
+
+```bash
+plumeIR analyse plumeIR_runs/layer_20261113-101500
+```
+
 ## The command line
 
 ```
 plumeIR CONFIG [--parallel [--workers N]] [--output-dir DIR] [--recompute]
                [--plot] [--save-plots] [--redraw-interval SECONDS] [--inspect]
-plumeIR RUN_FOLDER --inspect
+               [--analyse] [--preprocess-only]
+plumeIR RUN_FOLDER [--analyse] [--inspect]
+plumeIR analyse RUN_FOLDER [RUN_FOLDER ...] [options]
 ```
 
 `python -m plumeIR` is the same program.
@@ -199,9 +215,11 @@ plumeIR RUN_FOLDER --inspect
 | `--output-dir DIR` | parent of the run folder (default `./plumeIR_runs`) |
 | `--recompute` | rebuild the references instead of loading them from the cache |
 | `--plot` | live window: fits, column time series, gas ratios |
-| `--save-plots` | write the canvas and final figures to the run folder; without `--plot`, no window opens |
+| `--save-plots` | write the canvas and final figures, and the preprocessing figures, to the run folder; without `--plot`, no window opens. With `--preprocess-only`, only the preprocessing figures |
 | `--redraw-interval SECONDS` | redraw (and save a frame) at most this often, default 1 s; 0 redraws after every spectrum |
 | `--inspect` | step through a run's fits in a window (←/→, PgUp/PgDn, Home/End, or click a point); a config is run first |
+| `--analyse` | when the run is done, write its composition analysis to `RUN_FOLDER/analysis/` with the default settings ([Composition analysis](#composition-analysis)); on a run folder, analyse it. With `--inspect`, the analysis comes first. A run stopped with Ctrl-C is not analysed |
+| `--preprocess-only` | load and preprocess the spectra, build the references, measure the whole-spectrum background and registration, write `preprocess.csv` and the summary, and fit nothing |
 
 The config is checked completely before anything runs: a mistake stops the
 run with a message naming the key, before a run folder is created. Ctrl-C
@@ -266,10 +284,76 @@ Each run writes one folder, `<output-dir>/<config name>_<YYYYmmdd-HHMMSS>/`:
 | `config.ini` | the config as run, every path resolved to absolute |
 | `results_long.csv` | every parameter of every fit, with its error, one row per spectrum × window × parameter |
 | `results_wide.csv` | the target columns, one row per spectrum (gases in molec cm⁻², aerosols in g m⁻²) |
-| `summary.txt` | package versions and git commits, spectra loaded and fitted, the ILS, convergence and R² per window, the final gas ratios |
-| `fits.npz` | every fit's measured and model spectra, for `--inspect` |
+| `summary.txt` | package versions and git commits, spectra loaded and fitted, the ILS, convergence and R² per window, the final gas ratios, the whole-spectrum preprocessing's run-level results |
+| `fits.npz` | every fit's measured and model spectra and its covariance, for `--inspect` and the composition analysis |
+| `preprocess.csv` | per spectrum, measured before the fits: the background and wavenumber registration, the envelope peak, the relative scale (layer) and the opaque-band air temperature (emission) (`*PREPROCESS`; not written when both products are off) |
 | `run.log` | the full log, including RFM and Mie progress |
-| `plots/` | with `--save-plots`: the final canvas, fits, time series and ratio figures, and canvas frames |
+| `analysis/` | with `--analyse`: the composition analysis ([Composition analysis](#composition-analysis)) |
+| `preprocess.npz` | the spectra as fitted, their hulls, the background in the opaque bands and the registration's sub-band lags, for the preprocessing plots (tens of MB for a few hundred spectra) |
+| `plots/` | with `--save-plots`: the final canvas, fits, time series and ratio figures, and canvas frames; `preprocess_*.png`: spectra with hulls and bands, registration, background (layer), relative scale (layer), time series and scatter against the fitted targets |
+
+## Composition analysis
+
+The analysis reads a finished run folder and refits nothing. It quotes the
+ratio of every target against a reference gas, the plume's molar fractions
+(gases) and mass fractions (gases and aerosols), and how they change through
+the run.
+
+```
+plumeIR analyse RUN_FOLDER [RUN_FOLDER ...] [--output-dir DIR] [--width W]
+                [--spectra] [--reference GAS] [--gases GAS ...] [--min-r2 R2]
+                [--no-jackknife] [--independent-errors] [--no-plots]
+```
+
+`plumeIR CONFIG --analyse` (or `plumeIR RUN_FOLDER --analyse`) runs the same
+analysis with the defaults below and writes the same files.
+
+| Option | Effect |
+|---|---|
+| `--output-dir DIR` | where to write; default `RUN_FOLDER/analysis/` for one run, required for several |
+| `--width W` | window width in minutes (default 2): the moving ratios and composition, and the pooled ratio's per-window backgrounds |
+| `--spectra` | `--width` counts spectra instead of minutes |
+| `--reference GAS` | gas the ratios are quoted against (default SO2, else the first target) |
+| `--gases GAS ...` | species to analyse (default every target of the run) |
+| `--min-r2 R2` | leave out spectra whose window fitted below this R² |
+| `--no-jackknife` | skip the jackknife errors (faster) |
+| `--independent-errors` | ignore the error correlation of species fitted in the same window |
+| `--no-plots` | write the tables only |
+
+Several run folders are analysed each on its own, then compared side by side.
+Runs may cover the same spectra, for example one dataset under two configs.
+
+| File | Content |
+|---|---|
+| `analysis.txt` | settings and versions; per run, each ratio three ways (the run's regression line, the pooled ratio and the all-species fit), the 5-95% range of the window ratios, the molar and mass fractions, and the number of independent sources the data supports. Also printed |
+| `ratios.csv` | per run and species: those numbers with their errors and MSWD |
+| `moving_composition.csv` | per spectrum: the ratios and fractions of its window, with errors |
+| `rank.csv` | per run and number of sources: χ², degrees of freedom, and what noise alone would give |
+| `composition*.png`, `rank.png`, `analysis_ratio_*.png`, `analysis_window_*.png` | the fractions (donut and stacked against time), the source count, and each ratio's regression and moving windows; with several runs, `composition_runs.png` and `ratios_runs.png` compare them |
+
+How to read it:
+
+- **Quote the pooled ratio.** It fits one slope through the whole run with a
+  separate background in each window. The single regression line through the
+  run is biased when the background drifts with the plume (2-5% high on the
+  layer validation run).
+- **Errors are block-jackknife errors** (one block per window), which include
+  slow variation along the run. They are 1.4-1.9 times York's errors on the
+  layer validation run.
+- **Species fitted in the same window have correlated errors.** Runs written
+  since 3.0.0rc5 store each fit's covariance, and the analysis uses it in the
+  regressions and the all-species fit. Older runs, and runs without
+  `fits.npz`, are analysed with independent errors and a warning.
+- **Aerosols are by mass.** An acid aerosol is counted as its acid content.
+  Ratios involving an aerosol are in g g⁻¹, and molar fractions cover the
+  gases only.
+- **More than one source.** The rank table reports how much a second source
+  improves the fit beyond what noise would give. A large excess means the
+  plume is not one fixed mixture, or the errors understate the scatter. The
+  single-source fractions then average over the mixtures.
+- **The errors are still fit errors** (see [Config files](#config-files)). A
+  species held at a fit bound, such as an aerosol at zero in most spectra,
+  has a linearised two-sided error, and its ratio is fragile.
 
 ## Validation
 

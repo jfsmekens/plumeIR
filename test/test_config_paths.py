@@ -80,8 +80,8 @@ class TestResolveConfigPaths:
 
     def test_other_keys_do_not_search_the_rfm_dir(self, cfg_dir, rfm_dir):
         (rfm_dir / 'atm' / 'spec.txt').touch()
-        out = resolve_config_paths({'GEOMETRY': {'self_file': 'spec.txt'}}, cfg_dir)
-        assert out['GEOMETRY']['self_file'] == str(cfg_dir / 'spec.txt')
+        out = resolve_config_paths({'PREPROCESS': {'self_file': 'spec.txt'}}, cfg_dir)
+        assert out['PREPROCESS']['self_file'] == str(cfg_dir / 'spec.txt')
 
     def test_input_not_modified(self, cfg_dir, rfm_dir):
         (rfm_dir / 'atm' / 'mls.atm').touch()

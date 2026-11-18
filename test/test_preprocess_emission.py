@@ -20,7 +20,7 @@ import pytest
 
 from plumeIR.exceptions import PlumeIRError
 from plumeIR.spectra.spectrum import Spectrum, SpectrumType
-from plumeIR.config.objects import DataConfig, EmissionGeometry
+from plumeIR.config.objects import DataConfig, EmissionGeometry, PreprocessConfig
 from plumeIR.physics import bbt, rad
 from plumeIR.preprocess import preprocess_spectra
 from plumeIR.preprocess.drift import DriftingSpectrum
@@ -318,7 +318,7 @@ class TestPreprocessEmission:
 
         out = preprocess_spectra(
             [make_scene(truth)], emission_geometry(),
-            DataConfig(data_dir=tmp_path),
+            DataConfig(data_dir=tmp_path), PreprocessConfig(subtract_self=True),
         )
 
         assert out[0].spec_type is SpectrumType.RAD
@@ -335,8 +335,10 @@ class TestPreprocessEmission:
             patched_reader[name] = make_bb(temp, name=name)
         scene, cfg = [make_scene(rad(WN, 265.0))], DataConfig(data_dir=tmp_path)
 
-        on  = preprocess_emission(scene, emission_geometry(subtract_self=True), cfg)
-        off = preprocess_emission(scene, emission_geometry(subtract_self=False), cfg)
+        on  = preprocess_emission(scene, emission_geometry(), cfg,
+                                  PreprocessConfig(subtract_self=True))
+        off = preprocess_emission(scene, emission_geometry(), cfg,
+                                  PreprocessConfig(subtract_self=False))
 
         np.testing.assert_array_equal(on[0].y, off[0].y)
 

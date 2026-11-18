@@ -34,7 +34,7 @@ from plumeIR.preprocess.layer import (
 logger = logging.getLogger(__name__)
 
 
-def preprocess_spectra(spectra: list, geometry, data_config) -> list:
+def preprocess_spectra(spectra: list, geometry, data_config, preprocess) -> list:
     """
     Apply the geometry-appropriate preprocessing to a run's spectra.
 
@@ -45,9 +45,14 @@ def preprocess_spectra(spectra: list, geometry, data_config) -> list:
     spectra : list of Spectrum
         Scene spectra, in acquisition order.
     geometry : LayerGeometry, EmissionGeometry or SolarGeometry
-        Run geometry; supplies the preprocessing flags.
+        Run geometry (emission calibration flags).
     data_config : DataConfig
         Data location and file-selection settings.
+    preprocess : PreprocessConfig
+        The ``*PREPROCESS`` settings (``cfg["preprocess"]``).  Required, not
+        defaulted: ``subtract_self`` moved here from the geometry
+        (2026-11-15), and a missing argument must fail rather than switch
+        self-emission subtraction off without notice.
 
     Returns
     -------
@@ -55,10 +60,10 @@ def preprocess_spectra(spectra: list, geometry, data_config) -> list:
         Preprocessed spectra, same length and order as the input.
     """
     if isinstance(geometry, LayerGeometry):
-        return preprocess_layer(spectra, geometry, data_config)
+        return preprocess_layer(spectra, preprocess, data_config)
 
     if isinstance(geometry, EmissionGeometry):
-        return preprocess_emission(spectra, geometry, data_config)
+        return preprocess_emission(spectra, geometry, data_config, preprocess)
 
     logger.debug(
         "No preprocessing implemented for %s; passing spectra through",

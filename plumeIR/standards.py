@@ -113,7 +113,7 @@ GAS_DEFAULTS: Mapping[str, Mapping[str, object]] = freeze({
 # ---------------------------------------------------------------------------
 
 AERO_DEFAULTS: Mapping[str, Mapping[str, object]] = freeze({
-    "H2SO4": {
+    "H2SO4_aq": {
         "conc":     1.0e-3,
         "size":     1.0,
         "sigma":    1.5,

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-__version__ = "3.0.0rc4"
+__version__ = "3.0.0rc5"
 __author__ = "J.-F. Smekens"
 
 logging.getLogger("plumeIR").addHandler(logging.NullHandler())

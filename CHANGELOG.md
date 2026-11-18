@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0 — unreleased (preview: 3.0.0rc4)
+## 3.0.0 — unreleased (preview: 3.0.0rc5)
 
 plumeIR v3 is a rewrite of v2, not an update of it: no file is carried over.
 v2 remains available at its tag (`v2.0`) in `jfsmekens/plumeIR`. This entry
@@ -47,6 +47,12 @@ measured size of each change is given where it is known.
   the interferogram. Layer CO and CO2 no longer split between two solutions:
   their correlation with v2 rises from 0.80 to 0.99 and the CO/SO2 and
   CO2/SO2 ratio scatter nearly halves; median columns unchanged.
+- *The FOV only broadens.* A finite FOV also moves lines by ν·fov²/16; that
+  displacement is no longer in the kernel and is taken up by `nu_shift`, so
+  `fov` measures line width alone and is no longer tied to `nu_shift`
+  (correlation in the layer SO2 and HCl windows +0.91 / +0.95 before, −0.23 /
+  −0.72 after). Columns are unchanged (layer ×1.00000); fitted `fov` and
+  `nu_shift` values differ from earlier runs and are not comparable with them.
 - *`max_opd` and `apod_type` come from the data files.* The maximum OPD is
   half of `1/RES` (1.037 cm for both validation instruments). v2 configs
   pinned it at 2.0 cm (Bruker) or 1.8 cm (MIDAC), and a fitted FOV absorbed
@@ -134,6 +140,21 @@ explained.
   both columns' fit errors. Its quoted error is scaled by √MSWD when the
   scatter exceeds those errors, and the MSWD is reported. On the layer
   validation data the slopes equal `scipy.odr`'s within 1.6e-6.
+- Two species fitted in the same window have correlated errors, and the
+  ratio regression now uses that correlation, spectrum by spectrum, from the
+  fit's covariance (stored in `fits.npz`). Pairs from different windows are
+  unchanged. On the emission validation data H2SO4_aq and ash errors
+  correlate at −0.71; on the layer data the pairs in one window stay below
+  0.1 and nothing moves.
+
+**Fit errors** (`retrieval/nlls.py`)
+
+- A parameter the spectrum does not constrain no longer removes every error
+  of its fit. When an aerosol fits to zero its size has no effect, and the
+  parameter covariance could not be inverted, so SO2's error was lost too: in
+  230 of 300 spectra of the emission validation data. Now only that
+  parameter's error is missing. Fitted values are unchanged to the bit, and so
+  are errors that were already reported.
 
 ### New
 
@@ -143,13 +164,31 @@ explained.
 - A live display of fits, column time series and gas-ratio regressions
   (`--plot`), saved figures (`--save-plots`), and an inspector for finished
   runs (`--inspect`).
+- A composition analysis of finished runs (`plumeIR analyse RUN_FOLDER`, or
+  `--analyse` at the end of a run). It gives each species' ratio against a
+  reference gas three ways: the run's regression line, a pooled ratio with a
+  background per window, and an all-species fit. It also gives the molar and
+  mass fractions, moving windows through the run, and a test of whether the
+  plume holds more than one source. Errors are block-jackknife errors.
+  Species fitted in the same window carry their error correlation, from fit
+  covariances that runs now store (`fits.npz` format 2). Runs without them
+  are analysed with independent errors.
+- Whole-spectrum preprocessing (`*PREPROCESS background`, `registration`):
+  each spectrum's additive background and wavenumber shift and scale,
+  measured before the fits and reported in `preprocess.csv` (the default
+  `report` leaves the fits unchanged), with `--preprocess-only` and figures.
 - Optimal estimation as a second retrieval backend (experimental).
 - Solar occultation geometry (experimental; no preprocessing yet).
 - Layer: a gas in both the ambient air and the plume, fitted as `{GAS}_atm` +
   `{GAS}`; a plume temperature passed between windows (`plume_temp_from`).
   Both are opt-in.
 - Plume aerosols through mieEODG (any species in its refractive-index
-  database), with the H2SO4 weight fraction optionally fitted.
+  database), with the H2SO4_aq weight fraction optionally fitted. The size
+  and composition fits (`fit_size_aero`, `fit_aero_composition`) take True,
+  False or a list of aerosols (only those fitted), in `*RETRIEVAL` and per
+  window in a `*FITn` section. `results_wide.csv` carries
+  the acid and water content of each acid aerosol (`H2SO4_aq[H2SO4]_g_m2`,
+  `..._molec_cm2`, with errors).
 - References are cached by content in `~/.plumeIR/cache/`: a changed input
   rebuilds, an unchanged one loads in seconds. A narrower window is cut from a
   wider gas table that is already built, bit for bit, without rerunning RFM.
@@ -167,14 +206,31 @@ explained.
 
 ### Config changes
 
+- **Acid aerosols are `H2SO4_aq` and `HNO3_aq`** (were `H2SO4`, `HNO3`), with
+  their parameters `r0_H2SO4_aq`, `wt_H2SO4_aq`. They are binary solutions
+  of acid and water, and the old names were also gas names (`HNO3` was both).
+  Old configs are read with a warning naming each rename (`plume_aero`,
+  `targets`, `*DEFAULTS` fields, `sigma_prior_` keys, `*PLOT` ratios), and
+  old run folders load with their results renamed; `HNO3` as a gas keeps its
+  name.
+
 - **Every key is in one catalogue**, `plumeIR/config/keys.py`, with its type,
   unit, default, limits and geometries. The reference
   (`docs/CONFIG_REFERENCE.md`) is generated from it. Values are read by type,
   and the whole config is checked before a run starts. An unknown key is a
   warning, not an error, so a v2 config can be read and its leftover keys
   are named.
-- **New sections:** `*MODEL` (`nperwn`, `model_padding`, `cache_dir`) and
-  `*PLOT` (`ratios`, `scroll`, `regression`, `rh`, `background_<gas>`).
+- **New sections:** `*MODEL` (`nperwn`, `model_padding`, `cache_dir`),
+  `*PREPROCESS` (what is done to the spectra before the fits: `subtract_self`
+  and `self_file`, moved from `*GEOMETRY`, where they are still read with a
+  warning; and the whole-spectrum preprocessing, `background` and
+  `registration`, which measures each spectrum's additive background and
+  wavenumber shift and scale before the fits, spectrum by spectrum, reports
+  them by default in `preprocess.csv` with envelope metrics (peak, a
+  relative broadband scale, the emission air temperature; `reference_spectra`),
+  stores what its plots need in `preprocess.npz`, draws them with
+  `--save-plots`, and applies them on request) and `*PLOT` (`ratios`, `scroll`, `regression`, `rh`,
+  `background_<gas>`).
 - **New keys:** `retrieval_method` (`nlls` | `oe`, with `sigma_prior_<param>`),
   `fit_aero_composition`, `model_aero_scattering`, `self_file`, `dt_dist` /
   `fit_tdist`, and per window `continuum`, `plume_temp_from` and

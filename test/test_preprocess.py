@@ -21,7 +21,7 @@ from plumeIR.exceptions import PlumeIRError
 from plumeIR.spectra.discovery import discover_spectra, is_reference_file
 from plumeIR.spectra.spectrum import Spectrum, SpectrumType
 from plumeIR.config.objects import (
-    DataConfig, EmissionGeometry, LayerGeometry,
+    DataConfig, EmissionGeometry, LayerGeometry, PreprocessConfig,
 )
 from plumeIR.preprocess import preprocess_spectra
 from plumeIR.preprocess.layer import (
@@ -366,7 +366,7 @@ class TestPreprocessLayer:
     def test_flag_off_is_a_no_op(self, tmp_path):
         spectra = [make_spectrum(np.full_like(WN, 5.0))]
         out = preprocess_layer(
-            spectra, make_layer_geometry(subtract_self=False),
+            spectra, PreprocessConfig(subtract_self=False),
             DataConfig(data_dir=tmp_path),
         )
         assert out is spectra
@@ -376,7 +376,7 @@ class TestPreprocessLayer:
         with pytest.raises(PlumeIRError, match="no self-emission spectrum"):
             preprocess_layer(
                 [make_spectrum(np.full_like(WN, 5.0))],
-                make_layer_geometry(subtract_self=True),
+                PreprocessConfig(subtract_self=True),
                 DataConfig(data_dir=tmp_path, filter_ext="spc"),
             )
 
@@ -387,7 +387,7 @@ class TestPreprocessLayer:
 
         spectra = [make_spectrum(np.full_like(WN, 5.0 + i)) for i in range(3)]
         out = preprocess_layer(
-            spectra, make_layer_geometry(subtract_self=True),
+            spectra, PreprocessConfig(subtract_self=True),
             DataConfig(data_dir=tmp_path, filter_ext="spc"),
         )
 
@@ -403,7 +403,7 @@ class TestPreprocessLayer:
 
         out = preprocess_layer(
             [make_spectrum(np.full_like(WN, 5.0))],
-            make_layer_geometry(subtract_self=True, self_file=explicit),
+            PreprocessConfig(subtract_self=True, self_file=explicit),
             DataConfig(data_dir=tmp_path, filter_ext="spc"),
         )
         np.testing.assert_allclose(out[0].y, np.full_like(WN, 4.0))
@@ -418,8 +418,9 @@ class TestPreprocessDispatch:
 
         out = preprocess_spectra(
             [make_spectrum(np.full_like(WN, 5.0))],
-            make_layer_geometry(subtract_self=True),
+            make_layer_geometry(),
             DataConfig(data_dir=tmp_path, filter_ext="spc"),
+            PreprocessConfig(subtract_self=True),
         )
         np.testing.assert_allclose(out[0].y, np.full_like(WN, 3.0))
 
@@ -435,10 +436,10 @@ class TestPreprocessDispatch:
         """
         geom = EmissionGeometry(
             plume_height=1.0, plume_thickness=0.1, elev=30.0, obs_height=0.1,
-            atm_path=Path("/nonexistent/atm.atm"), subtract_self=True,
-            fit_difference=False,
+            atm_path=Path("/nonexistent/atm.atm"), fit_difference=False,
         )
         spectra = [make_spectrum(np.full_like(WN, 5.0))]
 
         with pytest.raises(PlumeIRError, match="No blackbody calibration"):
-            preprocess_spectra(spectra, geom, DataConfig(data_dir=tmp_path))
+            preprocess_spectra(spectra, geom, DataConfig(data_dir=tmp_path),
+                               PreprocessConfig(subtract_self=True))

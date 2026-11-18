@@ -9,6 +9,8 @@ broader plumeIR species set and retrieval diagnostics.
 from matplotlib import colormaps as cm
 import cmcrameri.cm as cmc
 
+from plumeIR import species as _species
+
 
 # =============================================================================
 # File format registries
@@ -43,33 +45,29 @@ REFERENCE_MARKERS: list[str] = [
 # Species registries
 # =============================================================================
 
+# Species lists: views of the registry (plumeIR.species, 2026-11-17).
 # Gas species handled by RFM via HITRAN line data
-RFM_GASES: list[str] = [
-    "H2O", "CO2", "SO2", "CO", "NO", "O3", "N2O", "NO2", "NH3", "HNO3",
-    "CH4", "O2", "HCl", "HF", "HBr", "HI", "H2S", "N2", "ClO", "SF6",
-    "SO3", "OCS", "OH",
-]
+RFM_GASES: list[str] = _species.gases(rfm_only=True)
 
 # All gas species recognised by plumeIR (RFM only for now; SiF4 deferred)
 POSSIBLE_GASES: list[str] = RFM_GASES
 
-# Aerosol / particulate species.
-# Treated as dimensionless scaling factors in ATM profiles, not VMRs.
-# 'AEROSOL' is RFM molecule slot 100 (native km⁻¹); all others require the
-# synthetic multi-tabulation pre-scaling approach (see RFMwrapper docs).
-AEROSOL_SPECIES: set[str] = {
-    "AEROSOL",  # RFM molecule 100 — native km⁻¹ slot
-    "ASH",      # volcanic ash
-    "H2SO4",    # sulphuric acid aerosol
-    "HNO3",     # nitric acid aerosol (distinct from gas-phase HNO3)
-    "WATER",    # liquid water droplets
-    "ICE",      # water ice
-    "SOOT",     # black carbon / soot
-    "DUST",     # mineral dust
-    "OC",       # organic carbon (wildfire smoke)
-}
+# Aerosol / particulate species (types, components and refractive-index
+# sources in plumeIR.species).  'AEROSOL' is RFM molecule slot 100 (native
+# km⁻¹); all others require the synthetic multi-tabulation pre-scaling
+# approach (see RFMwrapper docs).
+AEROSOL_SPECIES: set[str] = set(_species.aerosols())
 
 POSSIBLE_AEROSOLS: list[str] = sorted(AEROSOL_SPECIES)
+
+#: Former aerosol names (until 2026-11-17), read from old configs and run
+#: folders with a warning.  Acid aerosols are binary solutions (acid + water),
+#: named ``<ACID>_aq`` so that a name is never both a gas and an aerosol:
+#: ``HNO3`` was both, and ``H2SO4`` also exists as a (short-lived) gas.
+LEGACY_AEROSOL_NAMES: dict[str, str] = {"H2SO4": "H2SO4_aq", "HNO3": "HNO3_aq"}
+
+#: The aerosol with a 2-D (radius, weight fraction) table.
+H2SO4_AQ = "H2SO4_aq"
 
 # Gases treated via scaling of a continuum/line-mixing reference rather than
 # a simple temperature-dependent polynomial (currently only H2O).
@@ -84,38 +82,12 @@ ATM_UNITS: dict[str, str] = {"HGT": "[km]", "PRE": "[mb]", "TEM": "[K]"}
 # Molecular weights [g/mol]  —  IUPAC 2021 standard atomic weights
 # =============================================================================
 
-WEIGHTS: dict[str, float] = {
-    "H2O":    18.01528,
-    "CO2":    44.009,
-    "O3":     47.997,
-    "N2O":    44.013,
-    "CH4":    16.043,
-    "O2":     31.998,
-    "SO2":    64.064,
-    "SO3":    80.063,
-    "HCl":    36.461,
-    "HF":     20.006,
-    "CO":     28.010,
-    "OCS":    60.075,
-    "NH3":    17.031,
-    "NO":     30.006,
-    "NO2":    46.005,
-    "HNO3":   63.013,
-    "HBr":    80.912,
-    "HI":    127.912,
-    "N2":     28.014,
-    "ClO":    51.452,
-    "SF6":   146.055,
-    "OH":     17.007,
-    "H2S":    34.081,
-    "H2SO4":  98.079,
-    "ASH":    65.0,       # bulk proxy; not a true molecular weight
-    "WATER":  18.01528,   # H2O aerosol
-    "ICE":    18.01528,   # H2O ice aerosol
-    "SOOT":   12.011,     # carbon proxy
-    "DUST":   60.08,      # SiO2 proxy
-    "OC":    200.0,       # organic carbon bulk proxy
-}
+#: Molar mass [g mol⁻¹] of every molecule plumeIR converts (gases and
+#: aerosol components): a view of :data:`plumeIR.species.MOLAR_MASS`.  Aerosols
+#: have none: their columns are masses already.  (The former bulk "proxy"
+#: weights for ASH, DUST, SOOT, OC, WATER and ICE were removed 2026-11-17;
+#: nothing used them.)
+WEIGHTS: dict[str, float] = dict(_species.MOLAR_MASS)
 
 
 # =============================================================================
@@ -137,7 +109,7 @@ APOD_TYPES: list[str] = [
 INTERESTING_RATIOS: list[str] = [
     "CO2:SO2", "H2O:SO2", "H2O:CO2", "CO:SO2",
     "SO2:HCl", "SO2:HF", "SO2:H2S", "SO2:SO3",
-    "HCl:HF", "SO2:H2SO4", "H2SO4:ASH", "H2O:WATER",
+    "HCl:HF", "SO2:H2SO4_aq", "H2SO4_aq:ASH", "H2O:WATER",
     "CO2:CH4", "CH4:CO", "CO:CO2",         # wildfire / anthropogenic
     "NH3:SO2", "NO2:SO2",                   # anthropogenic
     "N/A:N/A",
@@ -245,7 +217,8 @@ PLOT_COLORS: dict[str, str] = {
     "HNO3":       "goldenrod",
     "H2S":        "#BCBD22",    # olive yellow (tab:olive)
     # Aerosol species
-    "H2SO4":      "#E7298A",    # magenta (Dark2)
+    "H2SO4_aq":   "#E7298A",    # magenta (Dark2)
+    "HNO3_aq":    "#B8860B",    # dark goldenrod, beside gas HNO3
     "ASH":        "#4D4D4D",    # charcoal
     "WATER":      "#5063E6",    # periwinkle blue, near water vapour on purpose
     "ICE":        "#8DA0CB",    # steel blue
@@ -293,7 +266,8 @@ DARK_COLORS: dict[str, str] = {
     "HF":          "magenta",
     "NH3":         "yellow",
     "H2S":         "olivedrab",
-    "H2SO4":       "tab:green",
+    "H2SO4_aq":    "tab:green",
+    "HNO3_aq":     "gold",
     "ASH":         "tab:grey",
     "WATER":       "deepskyblue",
     "ICE":         "powderblue",
@@ -338,7 +312,7 @@ PLOT_CMAPS: dict = {
     "N2O":    cmc.hawaii_r,
     "NH3":    cmc.bamako_r,
     "H2S":    cmc.turku_r,
-    "H2SO4":  cm["Greens"],
+    "H2SO4_aq": cm["Greens"],
     "ASH":    cm["Greys"],
     "WATER":  cmc.nuuk_r,
     "ICE":    cmc.oslo_r,
@@ -390,7 +364,8 @@ PRETTY_NAMES: dict[str, str] = {
     "ClO":         r"$ClO$",
     "HF":          r"$HF$",
     "H2S":         r"$H_2S$",
-    "H2SO4":       r"$SO_4^{2-}$ aerosol",
+    "H2SO4_aq":    r"$H_2SO_4$(aq)",
+    "HNO3_aq":     r"$HNO_3$(aq)",
     "ASH":         r"$ash$",
     "WATER":       r"$H_2O$ aerosol",
     "ICE":         r"$ice$",

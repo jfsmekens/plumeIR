@@ -1,9 +1,10 @@
 """
 The end-to-end plumeIR pipeline, as a stream of results.
 
-    config → build objects → build a Reference per window (RFM/mieEODG)
-           → load spectra → preprocess → fit each spectrum (serial/parallel ×
-             NLLS/OE) → ResultsTable
+    config → build objects → load spectra → preprocess → build a Reference
+           per window (RFM/mieEODG) → whole-spectrum products (background
+           and wavenumber registration; report by default) → fit each
+           spectrum (serial/parallel × NLLS/OE) → ResultsTable
 
 Clients (the command line, a GUI) use it in three steps:
 
@@ -32,8 +33,9 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from plumeIR.preprocess.products import PreprocessReport, preprocess_products
 from plumeIR.config.builder import build_from_config
-from plumeIR.config.objects import PlotConfig, SolarGeometry
+from plumeIR.config.objects import PlotConfig, PreprocessConfig, SolarGeometry
 from plumeIR.exceptions import PlumeIRError
 from plumeIR.preprocess import preprocess_spectra
 from plumeIR.reference import build_reference_for
@@ -66,6 +68,11 @@ class RunSetup:
         Loaded and preprocessed spectra, in chronological order.
     plot : PlotConfig
         Ratio and display settings (``*PLOT``), read by the run state.
+    preprocess : PreprocessConfig
+        What was done to the spectra before the fits (``*PREPROCESS``).
+    preprocess_report : PreprocessReport or None
+        What the whole-spectrum preprocessing measured (and applied), per spectrum
+        and for the run; ``None`` when the setup was built without it.
     """
     data:       object
     model:      object
@@ -76,6 +83,8 @@ class RunSetup:
     references: dict
     spectra:    list
     plot:       PlotConfig = PlotConfig()
+    preprocess: PreprocessConfig = PreprocessConfig()
+    preprocess_report: PreprocessReport | None = None
 
     @property
     def n_spectra(self) -> int:
@@ -164,10 +173,10 @@ def prepare_run(
 
     # Spectra first: a wrong data_dir or file filter fails in seconds, not
     # after minutes of reference building.
-    spectra = load_spectra(data)
-    if not spectra:
+    raw = load_spectra(data)
+    if not raw:
         raise PlumeIRError(explain_no_spectra(data))
-    spectra = preprocess_spectra(spectra, geometry, data)
+    spectra = preprocess_spectra(raw, geometry, data, cfg["preprocess"])
     # max_opd / apod_type from the data files, once for the run, so the setup
     # carries the values the fits will use.  The references are built from the
     # config's retrieval settings, as before, so their cache keys are unchanged.
@@ -185,10 +194,35 @@ def prepare_run(
         params[window.label] = pset
         windows[window.label] = window
 
+    # Whole-spectrum preprocessing products: measurements
+    # before the fits.  In report mode the spectra come back unchanged.
+    products_input = _PreprocessInput(
+        data=data, model=model, geometry=geometry, retrieval=resolved,
+        windows=windows, params=params, references=references,
+        preprocess=cfg["preprocess"], raw=list(raw), spectra=list(spectra))
+    spectra, preprocess_report = preprocess_products(products_input, cache_dir=cache_dir)
+
     return RunSetup(data=data, model=model, geometry=geometry,
                     retrieval=resolved, windows=windows, params=params,
                     references=references, spectra=list(spectra),
-                    plot=cfg.get("plot", PlotConfig()))
+                    plot=cfg.get("plot", PlotConfig()),
+                    preprocess=cfg["preprocess"],
+                    preprocess_report=preprocess_report)
+
+
+@dataclass(frozen=True)
+class _PreprocessInput:
+    """What the whole-spectrum preprocessing reads: the setup plus the raw spectra."""
+    data:        object
+    model:       object
+    geometry:    object
+    retrieval:   object
+    windows:     dict
+    params:      dict
+    references:  dict
+    preprocess:  PreprocessConfig
+    raw:         list
+    spectra:     list
 
 
 def stream_run(

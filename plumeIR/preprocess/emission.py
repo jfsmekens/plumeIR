@@ -396,6 +396,7 @@ def preprocess_emission(
     spectra:     list[Spectrum],
     geometry,
     data_config,
+    preprocess=None,
 ) -> list[Spectrum]:
     """
     Apply emission-geometry preprocessing to a run's spectra.
@@ -413,6 +414,9 @@ def preprocess_emission(
         Supplies ``bb_drift``, ``use_bbt`` and ``fit_difference``.
     data_config : DataConfig
         Supplies ``data_dir`` and ``filter_ext`` for discovery.
+    preprocess : PreprocessConfig or None
+        Only its ``subtract_self`` is looked at, to note that it does not
+        apply here.  ``None`` is the same as not set.
 
     Returns
     -------
@@ -435,7 +439,7 @@ def preprocess_emission(
             "is parked on branch 'park/difference-mode'."
         )
 
-    if getattr(geometry, "subtract_self", False):
+    if preprocess is not None and preprocess.subtract_self:
         logger.debug(
             "subtract_self is set but does not apply to the emission "
             "geometry; the instrument radiance (L_inst) is carried by the "

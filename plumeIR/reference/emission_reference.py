@@ -40,6 +40,7 @@ import numpy as np
 from plumeIR.config.objects import (
     EmissionGeometry, FitWindowConfig, GeometryType, ModelConfig, Retrieval,
 )
+from plumeIR.constants import H2SO4_AQ
 from plumeIR.exceptions import ReferenceComputationError
 from plumeIR.parameters.parameter import ParameterSet
 from plumeIR.reference.atm_lut import AtmLayerLUT, derive_t_eff
@@ -644,7 +645,7 @@ def build_emission_reference(
             ref_conc = AERO_DEFAULTS.get(species, {}).get("conc", 1e-3)
             ref_mass = ref_conc * geometry.plume_thickness * 1e3
 
-        if species == "H2SO4":
+        if species == H2SO4_AQ:
             aero_luts[species] = AerosolLUT.build_h2so4_2d(
                 wn=wn_out, ref_mass_g_m2=float(ref_mass), with_absorption=True,
             )

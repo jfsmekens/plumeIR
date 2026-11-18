@@ -50,6 +50,12 @@ The kernel is trimmed to a length set by ``trim_opd`` (default: the nominal
 constant while its *shape* varies during a fit.  The core length is converged
 for the line shape (:func:`core_support`): it depends on the apodization and
 OPD only, never on ``fov``, so a held and a fitted ``fov`` see the same core.
+
+**The FOV only broadens (convention A, 2026-11-16).**  A finite FOV both
+broadens lines and displaces them by ``ν·fov²/16``; the kernel models the
+broadening only and is centred on zero.  The displacement is a shift like any
+other and goes to the wavenumber registration and ``nu_shift``, so ``fov``
+measures line width alone.
 """
 
 from __future__ import annotations
@@ -431,6 +437,9 @@ def make_ils(
 
     Smooth in both ``fov`` and ``max_opd``, so the kernel can be differentiated
     numerically during a fit — see the module docstring for why that matters.
+    The FOV only broadens the line (convention A): its displacement of line
+    centres, ``ν·fov²/16``, is not in the kernel and is carried by the
+    wavenumber registration and ``nu_shift``.
 
     Parameters
     ----------
@@ -458,8 +467,8 @@ def make_ils(
         varies.
     trim_fov : float or None
         FOV [rad] whose box width is added to the kernel's half-width, so the
-        kernel holds the whole FOV box (the shift puts it entirely on one side
-        of zero).  ``None`` uses ``fov``.  Pass the fitted ``fov``'s upper bound
+        kernel holds the whole FOV box (centred on zero) with margin for its
+        broadened ringing.  ``None`` uses ``fov``.  Pass the fitted ``fov``'s upper bound
         when fitting (:func:`kernel_trim_fov`), so the length stays fixed.  A
         live ``fov`` above ``trim_fov`` widens the support to fit it.
 
@@ -484,8 +493,12 @@ def make_ils(
 
     # ------------------------------------------------------------------
     # Kernel support: the line shape's converged core (core_support, at least
-    # +/-5 limbs of the nominal OPD) plus the widest FOV box the kernel must
-    # hold.  Set by trim_opd/trim_fov, not the live
+    # +/-5 limbs of the nominal OPD) plus the widest FOV box's width.  The box
+    # is centred on zero (the FOV only broadens), so half of that holds it and
+    # the other half is margin for the broadened ringing: with half alone the
+    # boxcar's cut mass at fov 0.015 is 2.57e-3, over _TAIL_MASS_TOL.  Kept
+    # at the full width (2026-11-16) also so that removing the FOV shift left
+    # the kernel length unchanged.  Set by trim_opd/trim_fov, not the live
     # parameters, so the length is constant during a fit.
     # ------------------------------------------------------------------
     trim = float(trim_opd) if trim_opd is not None else max_opd
@@ -550,27 +563,24 @@ def make_ils(
         raise PlumeIRError(
             f"apodization at zero OPD is {a0}; check apod_type={apod_type!r}."
         )
-    # FOV shift: a finite FOV displaces line centres by half the box width, to
-    # lower wavenumber, as well as broadening them.  Applied exactly, as the
-    # phase factor exp(-2πi·shift·x) on the interferogram, so the transform
-    # gives T(ν + shift): Re FFT(apod·e^{-2πi s x}) = (T(ν + s) + a0)/2, the
-    # pedestal unchanged.  It used to be a linear interpolation of the
-    # finished kernel, which averages neighbouring samples by an amount that
-    # depends on the fractional part of the shift: the kernel peak dipped
-    # 0.3% at half-sample shifts and recovered at whole ones, as large as the
-    # FOV broadening itself at these fov, so fitted fov settled where the
-    # shift is a whole number of samples (fov = 4·sqrt(n·dν/ν); 0.0175 and
-    # the 0.001 bound in the layer CO window; 2026-11-14, ILS decision 10).
-    shift = fov_width / 2.0
-    phase = np.exp(-2j * np.pi * shift * opd)
-    kernel  = np.fft.fftshift(np.fft.fft(apod * phase).real) - 0.5 * a0
+    # Convention A (2026-11-16): the FOV only BROADENS here.  A finite FOV also displaces line
+    # centres by half the box width, ν·fov²/16, to lower wavenumber; that
+    # displacement is left to the wavenumber registration and ``nu_shift``,
+    # which absorb any shift.  With the shift in the kernel, ``fov`` carried
+    # width and position at once, so a window's ``fov`` and ``nu_shift`` were
+    # partly collinear and the run's wavenumber scale ε was hidden inside
+    # ``fov`` (measured: the displacement nu_shift − ν·fov²/16 is ε·ν across
+    # seven layer windows).  The kernel was shifted exactly, by a phase factor
+    # on the interferogram, from 2026-11-14 (ILS decision 10) until this.
+    kernel  = np.fft.fftshift(np.fft.fft(apod).real) - 0.5 * a0
     wn_grid = np.fft.fftshift(np.fft.fftfreq(n_tot, d=dx))
     full_mass = 0.5 * a0 * n_tot
 
     # ------------------------------------------------------------------
     # Trim to the support (symmetric, so zero stays the centre sample that
     # apply_ils's centred convolution assumes), then normalise.  Trimming at the
-    # core alone cut the shifted FOV box: 31-57% of the kernel at fov 0.15.
+    # core alone cut the FOV box (31-57% of the kernel at fov 0.15 while the
+    # kernel still carried the FOV shift).
     # ------------------------------------------------------------------
     keep = np.abs(wn_grid) <= support
     if not keep.any():

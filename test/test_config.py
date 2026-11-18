@@ -607,13 +607,13 @@ class TestBuilder:
         """H2SO4 is capped at 2 um, well inside the LUT's 10 um."""
         from plumeIR.standards import H2SO4_R0_NODES
         cfg_text = _minimal_layer_config().replace(
-            "plume_aero  : None", "plume_aero  : H2SO4"
+            "plume_aero  : None", "plume_aero  : H2SO4_aq"
         )
         cfg_path = tmp_path / "t.ini"
         cfg_path.write_text(cfg_text)
         ps = build_from_config(cfg_path)["params"][0]
-        assert ps["r0_H2SO4"].bounds == (pytest.approx(0.1), pytest.approx(2.0))
-        assert ps["r0_H2SO4"].bounds[1] < float(H2SO4_R0_NODES[-1])
+        assert ps["r0_H2SO4_aq"].bounds == (pytest.approx(0.1), pytest.approx(2.0))
+        assert ps["r0_H2SO4_aq"].bounds[1] < float(H2SO4_R0_NODES[-1])
 
     def test_config_can_override_the_size_bounds(self, tmp_path):
         cfg_text = _minimal_layer_config().replace(
@@ -627,15 +627,15 @@ class TestBuilder:
     def test_h2so4_composition_param(self, tmp_path):
         from plumeIR.standards import H2SO4_WT_NODES
         cfg_text = _minimal_layer_config().replace(
-            "plume_aero  : None", "plume_aero  : H2SO4"
+            "plume_aero  : None", "plume_aero  : H2SO4_aq"
         ) + "\n"
         # fit_aero_composition default False → wt fixed
         cfg_path = tmp_path / "t.ini"
         cfg_path.write_text(cfg_text)
         ps = build_from_config(cfg_path)["params"][0]
-        assert "wt_H2SO4" in ps
-        assert ps["wt_H2SO4"].vary is False
-        assert ps["wt_H2SO4"].bounds == (
+        assert "wt_H2SO4_aq" in ps
+        assert ps["wt_H2SO4_aq"].vary is False
+        assert ps["wt_H2SO4_aq"].bounds == (
             pytest.approx(H2SO4_WT_NODES[0]), pytest.approx(H2SO4_WT_NODES[-1])
         )
 
@@ -667,11 +667,11 @@ class TestBuilder:
     def test_h2so4_composition_free_when_flagged(self, tmp_path):
         cfg_text = _minimal_layer_config(
             extra_retr="fit_aero_composition : True"
-        ).replace("plume_aero  : None", "plume_aero  : H2SO4")
+        ).replace("plume_aero  : None", "plume_aero  : H2SO4_aq")
         cfg_path = tmp_path / "t.ini"
         cfg_path.write_text(cfg_text)
         ps = build_from_config(cfg_path)["params"][0]
-        assert ps["wt_H2SO4"].vary is True
+        assert ps["wt_H2SO4_aq"].vary is True
 
     # --- Emission geometry parameters ---
 
@@ -721,10 +721,10 @@ class TestBuilder:
         assert len(polys) == 3  # polydeg=2 → poly0, poly1, poly2
 
     def test_resolve_defaults(self):
-        raw = {"so2_conc": 5.0, "h2so4_size": 2.0, "h2o_max": 3e4}
+        raw = {"so2_conc": 5.0, "h2so4_aq_size": 2.0, "h2o_max": 3e4}
         resolved = _resolve_defaults(raw)
         assert resolved["SO2"]["conc"] == 5.0
-        assert resolved["H2SO4"]["size"] == 2.0
+        assert resolved["H2SO4_aq"]["size"] == 2.0
         assert resolved["H2O"]["max"] == 3e4
 
 
@@ -789,7 +789,7 @@ class TestConfigAsData:
             "GEOMETRY": {"type": "layer", "pathlength": 1e-3, "atm_temp": 280.25,
                          "fit_gas_temp": False},
             "RETRIEVAL": {"apod_type": "NB medium", "fov": 0.0213},
-            "DEFAULTS": {"so2_conc": 5.0, "h2so4_size": 0.7},
+            "DEFAULTS": {"so2_conc": 5.0, "h2so4_aq_size": 0.7},
             "fits": [{"_label": "FIT0", "fit": True, "fit_window": [2400, 2550.5],
                       "atm_gases": ["H2O", "CO2"], "plume_gases": ["SO2"],
                       "plume_aero": None, "polydeg": 2}],

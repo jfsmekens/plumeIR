@@ -30,17 +30,60 @@ from plumeIR.retrieval.results import FitResult
 logger = logging.getLogger(__name__)
 
 
+def _inverse_normal(jac: np.ndarray) -> np.ndarray | None:
+    """
+    ``(JᵀJ)⁻¹``, with NaN rows and columns for parameters the data do not
+    constrain.
+
+    The plain inverse is used whenever it exists, is finite and has a
+    positive diagonal, so a well-posed fit is unchanged to the bit.  Where
+    it does not, columns of ``J`` that are exactly zero (a parameter with no
+    effect on the model) are left out, and the rest is inverted with each
+    column scaled to unit norm (Jacobi preconditioning: a parameter whose
+    effect is merely tiny gets a large but finite error instead of ruining
+    the inverse for every other parameter).  ``None`` when even that fails.
+    Exactly collinear columns are not detected: ``np.linalg.inv`` returns
+    huge finite values for them rather than raising, as it did before this
+    function existed.
+
+    Found 2026-11-16 on the emission validation run: in 230 of 300 spectra
+    an aerosol fits to zero, its size ``r0_`` then has no effect, ``JᵀJ`` is
+    singular, and every error of the fit, SO2's included, was lost.
+    """
+    n = jac.shape[1]
+    try:
+        cov = np.linalg.inv(jac.T @ jac)
+        if np.all(np.isfinite(cov)) and np.all(np.diag(cov) > 0):
+            return cov
+    except np.linalg.LinAlgError:
+        pass
+    norms = np.linalg.norm(jac, axis=0)
+    live = np.isfinite(norms) & (norms > 0)
+    if not live.any():
+        return None
+    a = jac[:, live] / norms[live]
+    try:
+        inner = np.linalg.inv(a.T @ a)
+    except np.linalg.LinAlgError:
+        return None
+    if not (np.all(np.isfinite(inner)) and np.all(np.diag(inner) > 0)):
+        return None
+    full = np.full((n, n), np.nan)
+    full[np.ix_(live, live)] = inner / np.outer(norms[live], norms[live])
+    return full
+
+
 def _covariance(res, n_data: int, n_par: int, absolute: bool) -> np.ndarray | None:
     """
     Parameter covariance from a least_squares result (mirrors curve_fit).
 
-    ``cov = (JᵀJ)⁻¹``, scaled by the reduced chi-square when the measurement
+    ``cov = (JᵀJ)⁻¹`` (:func:`_inverse_normal`: NaN for a parameter the data
+    do not constrain), scaled by the reduced chi-square when the measurement
     noise is unknown (``absolute=False``), matching ``curve_fit``'s
     ``absolute_sigma=False`` behaviour.
     """
-    try:
-        cov = np.linalg.inv(res.jac.T @ res.jac)
-    except np.linalg.LinAlgError:
+    cov = _inverse_normal(res.jac)
+    if cov is None:
         return None
     if not absolute:
         dof = max(1, n_data - n_par)
@@ -188,7 +231,8 @@ class NonLinearLeastSquares:
         resid = measured - model
         rmse = float(np.sqrt(np.mean(resid ** 2)))
 
-        if covariance is not None and np.all(np.isfinite(covariance)):
+        if covariance is not None and np.isfinite(np.diag(covariance)).any():
+            # NaN for a parameter the data do not constrain (_inverse_normal)
             perror = {n: float(e) for n, e in zip(names, np.sqrt(np.diag(covariance)))}
         else:
             perror, covariance = None, None

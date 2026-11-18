@@ -22,7 +22,7 @@ from plumeIR.config.builder import build_from_raw
 from plumeIR.config.keydoc import render_reference
 from plumeIR.config.objects import (
     DataConfig, EmissionGeometry, LayerGeometry, ModelConfig, PlotConfig,
-    Retrieval, SolarGeometry,
+    PreprocessConfig, Retrieval, SolarGeometry,
 )
 from plumeIR.config.parser import convert, normalise, read_config, write_config
 from plumeIR.config.paths import PATH_KEYS, RFM_ATM_KEYS
@@ -106,6 +106,7 @@ _NOT_KEYS = {
     (SolarGeometry, "GEOMETRY", "solar"),
     (Retrieval, "RETRIEVAL", None),
     (PlotConfig, "PLOT", None),
+    (PreprocessConfig, "PREPROCESS", "layer"),
 ])
 def test_dataclass_fields_are_the_keys_the_geometry_reads(cls, section, geometry):
     field_names = {f.name for f in dataclasses.fields(cls)} - _NOT_KEYS.get(cls.__name__, set())
@@ -126,8 +127,8 @@ def test_dataclass_defaults_come_from_the_catalogue(cls, geometry):
 
 
 def test_per_geometry_defaults():
-    assert LayerGeometry(1, 280, 1000, 400, 1000).subtract_self is False
-    assert keys.default("GEOMETRY", "subtract_self", "emission") is True
+    assert PreprocessConfig().subtract_self is False
+    assert keys.default("PREPROCESS", "subtract_self", "emission") is True
     assert keys.default("GEOMETRY", "plume_thickness", "layer") == 0.05
     assert keys.default("GEOMETRY", "plume_thickness", "solar") is None
 
@@ -198,6 +199,8 @@ def test_patterns():
     ("so2_conc", ("SO2", "conc")),
     ("ash_max_size", ("ASH", "max_size")),
     ("h2so4_size", ("H2SO4", "size")),
+    ("h2so4_aq_size", ("H2SO4_aq", "size")),
+    ("hno3_aq_max_size", ("HNO3_aq", "max_size")),
     ("hcl_conc", ("HCl", "conc")),     # registry spelling, not HCL
     ("xyz_conc", ("XYZ", "conc")),
     ("badkey", None),
@@ -328,7 +331,7 @@ def test_inactive_window_is_not_checked(tmp_path):
 def test_path_keys_come_from_the_catalogue():
     assert set(PATH_KEYS) == {
         ("DATA", "data_dir"), ("MODEL", "cache_dir"),
-        ("GEOMETRY", "atm_path"), ("GEOMETRY", "self_file"),
+        ("GEOMETRY", "atm_path"), ("PREPROCESS", "self_file"),
     }
     assert RFM_ATM_KEYS == {("GEOMETRY", "atm_path")}
 
@@ -360,3 +363,43 @@ def test_reference_lists_every_key():
         assert f"| `{key.name}` |" in text, key.name
     for pattern in keys.PATTERNS.values():
         assert f"| `{pattern.key.name}` |" in text
+
+
+# =============================================================================
+# *PREPROCESS (2026-11-15): subtract_self / self_file moved from *GEOMETRY
+# =============================================================================
+
+def test_preprocess_section_builds(tmp_path):
+    cfg = _build(tmp_path, extra_geom="", extra_retr="")
+    assert cfg["preprocess"] == PreprocessConfig()
+
+
+def test_moved_keys_read_from_geometry_with_a_warning(tmp_path, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="plumeIR.config.parser"):
+        cfg = _build(tmp_path, extra_geom="subtract_self : True")
+    assert cfg["preprocess"].subtract_self is True
+    assert "has moved to *PREPROCESS" in caplog.text
+
+
+def test_preprocess_section_wins_over_the_old_place(tmp_path, caplog):
+    import logging
+    from plumeIR.config.parser import migrate_moved_keys
+    raw = {"GEOMETRY": {"subtract_self": False}, "PREPROCESS": {"subtract_self": True}}
+    with caplog.at_level(logging.WARNING, logger="plumeIR.config.parser"):
+        out = migrate_moved_keys(raw)
+    assert out["PREPROCESS"]["subtract_self"] is True
+    assert "subtract_self" not in out["GEOMETRY"]
+    assert raw["GEOMETRY"] == {"subtract_self": False}      # input untouched
+    assert "also set in *PREPROCESS" in caplog.text
+
+
+def test_moved_keys_are_written_in_the_new_section(tmp_path):
+    from plumeIR.config.parser import read_config, write_config
+    src = _write(tmp_path, extra_geom="subtract_self : True")
+    raw = read_config(src)
+    out = tmp_path / "rewritten.ini"
+    write_config(raw, out)
+    text = out.read_text()
+    assert "*PREPROCESS" in text
+    assert text.index("subtract_self") > text.index("*PREPROCESS")

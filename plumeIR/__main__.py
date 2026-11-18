@@ -3,7 +3,9 @@ The plumeIR command line: ``python -m plumeIR CONFIG`` or ``plumeIR CONFIG``.
 
     plumeIR CONFIG [--parallel] [--workers N] [--output-dir DIR] [--recompute]
                    [--plot] [--save-plots] [--redraw-interval SECONDS] [--inspect]
-    plumeIR RUN_FOLDER --inspect
+                   [--analyse]
+    plumeIR RUN_FOLDER [--analyse] [--inspect]
+    plumeIR analyse RUN_FOLDER [RUN_FOLDER ...] [options]   (plumeIR.analysis.cli)
 
 Runs the whole retrieval for one config and writes one folder per run
 (``plumeIR.output``): the config as run, the long and wide results tables,
@@ -15,6 +17,15 @@ folder reopens it — fits, time series and ratios — and steps through its
 spectra without refitting (← / →, PgUp / PgDn, Home / End, or click a point).
 With a config, the run comes first and its folder is inspected at the end.
 A ``--plot`` run also turns its window into the inspector when it finishes.
+
+Composition analysis (``plumeIR.analysis``): ``--analyse`` writes the
+analysis of the run to ``RUN_FOLDER/analysis/`` once its results are
+written, with the defaults of ``plumeIR analyse`` (2-minute windows, ratios
+against SO2, every target).  It reads the run from its folder, as
+``plumeIR analyse RUN_FOLDER`` does afterwards, so the two give the same
+files.  On a run folder it analyses the folder.  With ``--inspect`` the
+analysis comes first.  A run stopped by Ctrl-C is not analysed, and a
+failed analysis is logged and never costs the run's results.
 
 Plotting (``plumeIR.plotting``): ``--plot`` opens a window showing the fits,
 target time series and gas ratios, as v2's analysis canvas, and stays open at
@@ -35,8 +46,8 @@ none.
 Ctrl-C stops the run: fits already running finish, the worker pool shuts down,
 and what finished is written out as usual.
 
-Exit status: 0 on success, 1 on a configuration, data or reference error, 130
-when stopped by Ctrl-C.
+Exit status: 0 on success, 1 on a configuration, data or reference error or
+a failed analysis, 130 when stopped by Ctrl-C.
 """
 
 from __future__ import annotations
@@ -55,7 +66,8 @@ from plumeIR.config.paths import resolve_config_paths
 from plumeIR.exceptions import PlumeIRError
 from plumeIR.output import (
     FRAMES_DIR, LOG_NAME, PLOTS_DIR, RunInfo, make_run_dir, run_summary,
-    write_fits, write_resolved_config, write_results, write_summary,
+    preprocess_summary, write_fits, write_preprocess,
+    write_resolved_config, write_results, write_summary,
 )
 from plumeIR.path_tracer import tracer_report
 from plumeIR.pipeline import collect_run, prepare_run, stream_run
@@ -76,6 +88,8 @@ _CONSOLE_FORMAT = "%(asctime)s %(levelname)-7s %(message)s"
 _FILE_FORMAT    = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 
 DEFAULT_OUTPUT_DIR = Path("plumeIR_runs")
+#: First arguments that start the composition analysis instead of a run.
+ANALYSE_COMMANDS = ("analyse", "analyze")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,8 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
                     "spectra, as set out in a plumeIR config file.",
     )
     p.add_argument("config", type=Path, metavar="CONFIG",
-                   help="the run's .ini config file, or with --inspect a "
-                        "finished run's folder")
+                   help="the run's .ini config file, or with --inspect or "
+                        "--analyse a finished run's folder")
     p.add_argument("--parallel", action="store_true",
                    help="fit spectra in a process pool (not with update_params)")
     p.add_argument("--workers", type=int, metavar="N",
@@ -116,6 +130,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="step through a run's fits, time series and ratios in "
                         "a window: a run folder is opened as is, a config is "
                         "run first")
+    p.add_argument("--analyse", "--analyze", action="store_true", dest="analyse",
+                   help="write the composition analysis (ratios, molar fractions) "
+                        "to RUN_FOLDER/analysis/ when the run is done, with the "
+                        "defaults of 'plumeIR analyse'; a run folder is analysed "
+                        "as is")
+    p.add_argument("--preprocess-only", action="store_true",
+                   help="prepare the run (spectra, references, whole-spectrum "
+                        "background and registration) and write preprocess.csv "
+                        "and the summary, without fitting: to look at the "
+                        "preprocessing before choosing *PREPROCESS modes")
     p.add_argument("--version", action="version", version=f"plumeIR {__version__}")
     return p
 
@@ -248,6 +272,23 @@ class _Plots:
         return True
 
 
+def _save_preprocess_plots(run_dir: Path, table, windows: dict | None = None) -> None:
+    """The whole-spectrum preprocessing figures, in ``plots/`` (never fatal)."""
+    from plumeIR.preprocess.archive import ARCHIVE_NAME, read_preprocess_archive
+    if not (run_dir / ARCHIVE_NAME).is_file():
+        return
+    try:
+        from plumeIR.plotting.preprocess import save_preprocess_figures
+        targets = table.wide() if table is not None and len(table.df) else None
+        primary = next((w.targets[0] for w in (windows or {}).values() if w.targets), None)
+        written = save_preprocess_figures(read_preprocess_archive(run_dir),
+                                          run_dir / PLOTS_DIR, targets, primary)
+        logger.info("Preprocessing figures written to %s (%d)", run_dir / PLOTS_DIR,
+                    len(written))
+    except Exception as exc:     # a figure must never cost the results
+        logger.error("Preprocessing figures not written: %s: %s", type(exc).__name__, exc)
+
+
 def inspect(run_dir: Path) -> int:
     """
     Open a finished run's folder in the inspector and wait until it is closed.
@@ -276,6 +317,40 @@ def inspect(run_dir: Path) -> int:
         pass
     finally:
         inspector.close()
+    return 0
+
+
+def analyse(run_dir: Path, plots: bool = True) -> int:
+    """
+    Write a run folder's composition analysis to ``RUN_FOLDER/analysis/``.
+
+    Parameters
+    ----------
+    run_dir : Path
+        A finished run folder.
+    plots : bool
+        Write the figures as well as the tables.
+
+    Returns
+    -------
+    int
+        Exit status: 0, or 1 when the analysis fails.  A failure is logged;
+        the run's own files are never touched.
+    """
+    from plumeIR.analysis.cli import ANALYSIS_DIR, run_analysis
+    from plumeIR.analysis.report import SUMMARY_NAME
+    out_dir = run_dir / ANALYSIS_DIR
+    try:
+        run_analysis([run_dir], out_dir, plots=plots)
+    except PlumeIRError as exc:
+        logger.error("Composition analysis failed: %s: %s", type(exc).__name__, exc)
+        return 1
+    except Exception as exc:     # an analysis must never cost the run's results
+        logger.error("Composition analysis failed: %s: %s", type(exc).__name__, exc)
+        logger.debug("Analysis failure", exc_info=True)
+        return 1
+    for line in (out_dir / SUMMARY_NAME).read_text(encoding="utf-8").rstrip().splitlines():
+        logger.info(line)
     return 0
 
 
@@ -322,6 +397,18 @@ def run(args: argparse.Namespace) -> int:
         write_resolved_config(raw, run_dir)
 
         setup = prepare_run(cfg, recompute=args.recompute)
+        if args.preprocess_only:
+            write_preprocess(setup, run_dir)
+            if args.save_plots:
+                _save_preprocess_plots(run_dir, None)
+            summary = preprocess_summary(setup, RunInfo(
+                config_path=config_path, started=started, finished=datetime.now(),
+                parallel=False, n_workers=None, stopped=False))
+            write_summary(summary, run_dir)
+            for line in summary.rstrip().splitlines():
+                logger.info(line)
+            logger.info("Preprocessing written to %s (no fits: --preprocess-only)", run_dir)
+            return 0
         state = RunState.for_run(setup)
         plots = _Plots(args, setup, state, run_dir)
 
@@ -342,6 +429,9 @@ def run(args: argparse.Namespace) -> int:
         table = collect_run(setup, items)
         tracer = tracer_report(table, setup.windows, setup.params, setup.geometry)
         write_results(table, run_dir, tracer)
+        write_preprocess(setup, run_dir)
+        if args.save_plots:
+            _save_preprocess_plots(run_dir, table, setup.windows)
         try:
             write_fits(items, run_dir)
         except OSError as exc:      # the tables are written; only inspection is lost
@@ -357,12 +447,16 @@ def run(args: argparse.Namespace) -> int:
         plots.finish()
         logger.info("Results written to %s", run_dir)
         if stopped:
+            if args.analyse:
+                logger.info("Run stopped: not analysed (plumeIR analyse %s "
+                            "analyses what finished)", run_dir)
             return 130
+        status = analyse(run_dir) if args.analyse else 0
         # A --plot window becomes the inspector once the run is done, unless
         # the user closed it during the run.
         if plots.close_window() or args.inspect:
-            return inspect(run_dir)
-        return 0
+            return inspect(run_dir) or status
+        return status
     except PlumeIRError as exc:
         logger.error("%s: %s", type(exc).__name__, exc)
         return 1
@@ -384,6 +478,12 @@ def main(argv: list[str] | None = None) -> int:
     int
         Exit status.
     """
+    argv = sys.argv[1:] if argv is None else list(argv)
+    # ``plumeIR analyse ...``: the composition analysis of finished runs.  A
+    # config file named "analyse" in the working directory keeps its meaning.
+    if argv and argv[0] in ANALYSE_COMMANDS and not Path(argv[0]).exists():
+        from plumeIR.analysis.cli import main as analyse_main
+        return analyse_main(argv[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.workers is not None and not args.parallel:
@@ -392,24 +492,34 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--workers must be at least 1")
     if args.redraw_interval < 0:
         parser.error("--redraw-interval must be 0 or more seconds")
+    if args.preprocess_only and (args.plot or args.inspect or args.analyse):
+        parser.error("--preprocess-only fits nothing: it does not combine with "
+                     "--plot, --inspect or --analyse (--save-plots writes its "
+                     "figures)")
     is_folder = args.config.expanduser().is_dir()
-    if is_folder and not args.inspect:
+    if is_folder and not (args.inspect or args.analyse):
         parser.error(f"{args.config} is a folder: add --inspect to open a "
-                     f"finished run, or give a config file to run")
+                     f"finished run or --analyse to analyse it, or give a "
+                     f"config file to run")
     if is_folder:
         run_flags = [flag for flag, on in (
             ("--parallel", args.parallel), ("--plot", args.plot),
-            ("--save-plots", args.save_plots), ("--recompute", args.recompute))
+            ("--save-plots", args.save_plots), ("--recompute", args.recompute),
+            ("--preprocess-only", args.preprocess_only))
             if on]
         if run_flags:
             parser.error(f"{', '.join(run_flags)} apply to a run, not to "
-                         f"inspecting a run folder")
+                         f"a finished run folder")
 
     console = logging.StreamHandler(sys.stderr)
     levels = _attach_handler(console, logging.INFO, _CONSOLE_FORMAT)
     try:
         if is_folder:
-            return inspect(args.config.expanduser().resolve())
+            run_dir = args.config.expanduser().resolve()
+            status = analyse(run_dir) if args.analyse else 0
+            if args.inspect:
+                return inspect(run_dir) or status
+            return status
         return run(args)
     except PlumeIRError as exc:
         # Config errors, raised before the run folder exists.

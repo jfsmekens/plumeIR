@@ -41,12 +41,15 @@ GEOMETRIES: tuple[str, ...] = (LAYER, EMISSION, SOLAR)
 ALL: frozenset[str] = frozenset(GEOMETRIES)
 
 #: Value types a key may declare.  ``list`` is a comma-separated list of
-#: names, ``window`` a ``start, stop`` pair of numbers; every other type holds
-#: one value, and only ``list`` and ``window`` split on commas.
-KEY_TYPES: tuple[str, ...] = ("bool", "int", "float", "str", "path", "list", "window")
+#: names, ``window`` a ``start, stop`` pair of numbers, ``flags`` True, False
+#: or a list of names (a switch for all, or only for those named); every
+#: other type holds one value, and only ``list``, ``window`` and ``flags``
+#: split on commas.
+KEY_TYPES: tuple[str, ...] = ("bool", "int", "float", "str", "path", "list", "window",
+                              "flags")
 
 #: Sections in file order.  ``FIT`` stands for every ``*FITn``.
-SECTIONS: tuple[str, ...] = ("DATA", "MODEL", "GEOMETRY", "RETRIEVAL",
+SECTIONS: tuple[str, ...] = ("DATA", "MODEL", "GEOMETRY", "PREPROCESS", "RETRIEVAL",
                              "DEFAULTS", "PLOT", "FIT")
 
 #: Gases that can serve as ``path_tracer`` (layer): well mixed at a known
@@ -60,6 +63,10 @@ PATH_TRACERS: tuple[str, ...] = ("CH4", "N2O")
 #: default), Theil-Sen (robust), orthogonal distance regression (errors on
 #: both axes, weighted by the fit errors).  Re-exported by ``objects``.
 RATIO_REGRESSIONS: tuple[str, ...] = ("siegel", "theil", "odr")
+
+#: Modes of a preprocessing product (``*PREPROCESS``): not measured, measured and written only, or
+#: measured and applied to the spectra the windows fit.
+PREPROCESS_MODES: tuple[str, ...] = ("off", "report", "apply")
 
 @dataclass(frozen=True)
 class Key:
@@ -200,6 +207,7 @@ class Key:
         noun = {"bool": "True or False", "int": "an integer", "float": "a number",
                 "str": "a string", "path": "a path string",
                 "list": f"a list of {self.item} names",
+                "flags": f"True, False or a list of {self.item} names",
                 "window": "wn_start, wn_stop"}[self.type]
         if self.type in ("int", "float") and self.low == 0 and self.low_open \
                 and self.high is None:
@@ -333,13 +341,32 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
         geometries=_GEO_LAYER, help="A priori source temperature"),
     Key("GEOMETRY", "no_gas", "bool", False, geometries=_GEO_LAYER,
         help="No-gas reference spectrum: not available in v3.0, must be False"),
-    Key("GEOMETRY", "subtract_self", "bool", None,
+
+    # --- *PREPROCESS: what is done to the spectra before the fits -----------
+    # (moved from *GEOMETRY 2026-11-15; the old place is still read, with a
+    # warning: parser.migrate_moved_keys)
+    Key("PREPROCESS", "subtract_self", "bool", None,
         geometries=frozenset({LAYER, EMISSION}),
         geometry_defaults={LAYER: False, EMISSION: True},
         help="Subtract the instrument self-emission spectrum before fitting"),
-    Key("GEOMETRY", "self_file", "path", None, geometries=_GEO_LAYER,
+    Key("PREPROCESS", "self_file", "path", None, geometries=_GEO_LAYER,
         must_exist="file", none="find '*self*' files in the data directory",
         help="Self-emission spectrum"),
+    Key("PREPROCESS", "background", "str", "report", choices=PREPROCESS_MODES,
+        ignore_case=True, geometries=_GEO_LAYER,
+        help="Additive background from the opaque bands (self-emission scale "
+             "and zero level): off, report (measured and written), or apply "
+             "(subtracted instead of the self spectrum, unclipped)"),
+    Key("PREPROCESS", "registration", "str", "report", choices=PREPROCESS_MODES,
+        ignore_case=True, geometries=frozenset({LAYER, EMISSION}),
+        help="Wavenumber shift and scale by cross-correlation with a model "
+             "spectrum: off, report (measured and written), or apply (the "
+             "wavenumber axis corrected before the fits, per spectrum; "
+             "nu_shift still fitted)"),
+    Key("PREPROCESS", "reference_spectra", "int", 10, low=1, geometries=_GEO_LAYER,
+        help="Number of first spectra whose median top hull is the reference "
+             "for the relative scale and temperature (taken from the start of "
+             "the series, so it also works in real time)"),
 
     # --- *GEOMETRY, emission and solar ---------------------------------------
     Key("GEOMETRY", "plume_height", "float", None, unit="km", **_POSITIVE,
@@ -398,10 +425,14 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
         help="Apply parameter bounds during optimisation"),
     Key("RETRIEVAL", "update_params", "bool", False,
         help="Seed each fit with the previous spectrum's result (serial runs only)"),
-    Key("RETRIEVAL", "fit_size_aero", "bool", True,
-        help="Fit the aerosol effective radius (r0_SPECIES)"),
-    Key("RETRIEVAL", "fit_aero_composition", "bool", False,
-        help="Fit the aerosol composition (wt_SPECIES, H2SO4 only)"),
+    Key("RETRIEVAL", "fit_size_aero", "flags", True, choices=tuple(POSSIBLE_AEROSOLS),
+        item="aerosol",
+        help="Fit the aerosol effective radius (r0_SPECIES): True, False, or the "
+             "aerosols whose size is fitted (the others held)"),
+    Key("RETRIEVAL", "fit_aero_composition", "flags", False,
+        choices=tuple(POSSIBLE_AEROSOLS), item="aerosol",
+        help="Fit the aerosol composition (wt_SPECIES, H2SO4_aq only): True, False, "
+             "or the aerosols whose composition is fitted"),
     Key("RETRIEVAL", "use_babs_aero", "bool", True,
         help="Use the aerosol absorption (Babs) rather than extinction (Bext)"),
     Key("RETRIEVAL", "fit_fov", "bool", True,
@@ -471,6 +502,14 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
     Key("FIT", "fit_atm_temp", "bool", None, geometries=_GEO_LAYER,
         none="inherit from *GEOMETRY",
         help="Per-window override: fit the atmospheric temperature"),
+    Key("FIT", "fit_size_aero", "flags", None, choices=tuple(POSSIBLE_AEROSOLS),
+        item="aerosol", none="inherit from *RETRIEVAL",
+        help="Per-window override: fit the effective radius (r0_SPECIES) of every "
+             "aerosol in this window (True / False) or of those named"),
+    Key("FIT", "fit_aero_composition", "flags", None, choices=tuple(POSSIBLE_AEROSOLS),
+        item="aerosol", none="inherit from *RETRIEVAL",
+        help="Per-window override: fit the composition (wt_SPECIES, H2SO4_aq only) "
+             "of every aerosol in this window (True / False) or of those named"),
     Key("FIT", "model_gas_emission", "bool", None, geometries=_GEO_LAYER,
         none="inherit from *GEOMETRY",
         help="Per-window override: model plume gas emission"),
@@ -551,6 +590,7 @@ SECTION_HELP: Mapping[str, str] = MappingProxyType({
     "DATA":      "Point to the data directory and specify file filtering",
     "MODEL":     "Forward model engine settings (RFM and mieEODG)",
     "GEOMETRY":  "Measurement geometry and geometry-specific forward model flags",
+    "PREPROCESS": "What is done to the spectra before the fits (optional section)",
     "RETRIEVAL": "Retrieval method and parameters passed to the forward model",
     "DEFAULTS":  "Per-species prior overrides, over the built-in tables in standards.py",
     "PLOT":      "Gas ratios and live plotting (optional section)",

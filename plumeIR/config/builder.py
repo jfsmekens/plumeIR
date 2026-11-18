@@ -28,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
+from plumeIR.constants import H2SO4_AQ
 from plumeIR.exceptions import ConfigError
 from plumeIR.config.keys import (
     AEROSOL, DEFAULTS_FIELDS, GAS, KEYS, PATTERNS, Key, split_species_field,
@@ -41,6 +42,7 @@ from plumeIR.config.objects import (
     LayerGeometry,
     ModelConfig,
     PlotConfig,
+    PreprocessConfig,
     Retrieval,
     SolarGeometry,
 )
@@ -173,6 +175,7 @@ def build_from_raw(raw: dict, base_dir: str | Path | None = None) -> dict:
     geometry = _resolve_plume_temp(build_geometry(raw["GEOMETRY"]))
     gtype    = _geometry_type(raw["GEOMETRY"])
     retrieval = build_retrieval(raw["RETRIEVAL"], gtype)
+    preprocess = build_preprocess(raw.get("PREPROCESS", {}), gtype)
     resolved_defaults = _resolve_defaults(raw.get("DEFAULTS", {}))
 
     windows: list[FitWindowConfig] = []
@@ -197,6 +200,7 @@ def build_from_raw(raw: dict, base_dir: str | Path | None = None) -> dict:
         "data":      data,
         "model":     model,
         "geometry":  geometry,
+        "preprocess": preprocess,
         "retrieval": retrieval,
         "windows":   windows,
         "params":    params,
@@ -257,10 +261,33 @@ def _apply_sigma_priors(
 # Section builders
 # =============================================================================
 
+def _flags(value: object) -> bool | tuple[str, ...] | None:
+    """A ``flags`` value: True / False, or the names given (a tuple)."""
+    if value is None or isinstance(value, bool):
+        return value
+    return (value,) if isinstance(value, str) else tuple(value)
+
+
+def aerosol_switch(window_value: object, retrieval_value: object, species: str) -> bool:
+    """
+    Whether a size or composition fit is on for one aerosol of a window.
+
+    The window's value wins over ``*RETRIEVAL``'s when set; True / False
+    switch every aerosol, a list only those named (2026-11-17, developer:
+    e.g. ash's size fitted while the sulphate's is held).
+    """
+    value = window_value if window_value is not None else retrieval_value
+    if isinstance(value, bool):
+        return value
+    return species in (value or ())
+
+
 def _convert(key: Key, value: object) -> object:
     """A validated config value as the type its key declares."""
     if key.type == "bool":
         return bool(value)
+    if key.type == "flags":
+        return _flags(value)
     if key.type == "int":
         return int(value)
     if key.type == "float":
@@ -357,6 +384,13 @@ def build_geometry(
     return cls(**_section_kwargs("GEOMETRY", raw, cls, name))
 
 
+def build_preprocess(raw: dict, geometry_type: GeometryType) -> PreprocessConfig:
+    """Build :class:`PreprocessConfig` from the raw *PREPROCESS dict (optional)."""
+    name = {GeometryType.LAYER: "layer", GeometryType.EMISSION: "emission",
+            GeometryType.SOLAR: "solar"}[geometry_type]
+    return PreprocessConfig(**_section_kwargs("PREPROCESS", raw, PreprocessConfig, name))
+
+
 def build_retrieval(raw: dict, geometry_type: GeometryType) -> Retrieval:
     """Build :class:`Retrieval` from the raw *RETRIEVAL dict."""
     pattern = PATTERNS["sigma_prior"]
@@ -400,6 +434,8 @@ def build_fit_window(raw: dict) -> FitWindowConfig:
         fit_gas_temp       = raw.get("fit_gas_temp"),
         fit_atm_temp       = raw.get("fit_atm_temp"),
         model_gas_emission = raw.get("model_gas_emission"),
+        fit_size_aero      = _flags(raw.get("fit_size_aero")),
+        fit_aero_composition = _flags(raw.get("fit_aero_composition")),
         continuum_gases    = _to_tuple(raw.get("continuum")),
         plume_temp_from    = (str(raw["plume_temp_from"])
                               if raw.get("plume_temp_from") is not None else None),
@@ -683,7 +719,7 @@ def build_parameter_set(
         # dt_dist railed at +20 K, at an R2 (0.99829) BETTER than the series
         # median — a degeneracy the fit slides along, not a failed fit.
         # dt_dist hit its bound in 2/50 spectra with aerosols vs 0/50 without.
-        r0_nodes = H2SO4_R0_NODES if species == "H2SO4" else AERO_R0_NODES
+        r0_nodes = H2SO4_R0_NODES if species == H2SO4_AQ else AERO_R0_NODES
         r0_lo = max(float(r0_nodes[0]),
                     float(_sp(species, "min_size", AERO_DEFAULTS, r0_nodes[0])))
         r0_hi = min(float(r0_nodes[-1]),
@@ -698,21 +734,23 @@ def build_parameter_set(
         params.append(Parameter(
             name   = f"r0_{species}",
             value  = r0_init,
-            vary   = retrieval.fit_size_aero,
+            vary   = aerosol_switch(window.fit_size_aero, retrieval.fit_size_aero,
+                                    species),
             bounds = (r0_lo, r0_hi),
             kind   = ParameterKind.AERO_PLUME,
         ))
 
         # Composition (H2SO4 only) — the 2-D LUT always covers weight
         # fraction; this parameter is varied only if fit_aero_composition.
-        if species == "H2SO4":
+        if species == H2SO4_AQ:
             wt_lo, wt_hi = float(H2SO4_WT_NODES[0]), float(H2SO4_WT_NODES[-1])
             wt_init = _sp(species, "comp", AERO_DEFAULTS, _fallback(AEROSOL, "comp"))
             wt_init = float(min(max(wt_init, wt_lo), wt_hi))
             params.append(Parameter(
                 name   = f"wt_{species}",
                 value  = wt_init,
-                vary   = retrieval.fit_aero_composition,
+                vary   = aerosol_switch(window.fit_aero_composition,
+                                        retrieval.fit_aero_composition, species),
                 bounds = (wt_lo, wt_hi),
                 kind   = ParameterKind.AERO_PLUME,
             ))

@@ -215,3 +215,160 @@ def york_fit(
                    slope_err=float(se_b * scale), intercept_err=float(se_a * scale),
                    slope_err_internal=float(se_b), intercept_err_internal=float(se_a),
                    mswd=float(mswd), n=int(n), weighted=weighted, iterations=it)
+
+
+@dataclass(frozen=True)
+class GroupedLineFit:
+    """
+    Result of :func:`york_fit_grouped`: one slope, an intercept per group,
+    ``y = slope·x + intercepts[g]``.
+
+    Attributes
+    ----------
+    slope : float
+    slope_err : float
+        Quoted 1σ error: the internal error scaled by ``sqrt(mswd)`` when
+        ``mswd > 1``, as :class:`LineFit` quotes it.
+    slope_err_internal : float
+        1σ error from the input errors alone.
+    intercepts : numpy.ndarray
+        One per group, in the order of ``groups_order``.
+    groups_order : numpy.ndarray
+        The group labels, sorted.
+    mswd : float
+        ``S / (n − n_groups − 1)``: every intercept costs a degree of freedom.
+    n, n_groups : int
+    iterations : int
+    """
+    slope:              float
+    slope_err:          float
+    slope_err_internal: float
+    intercepts:         np.ndarray
+    groups_order:       np.ndarray
+    mswd:               float
+    n:                  int
+    n_groups:           int
+    iterations:         int
+
+
+def york_fit_grouped(
+    x: np.ndarray,
+    y: np.ndarray,
+    sx: np.ndarray,
+    sy: np.ndarray,
+    groups: np.ndarray,
+    r: np.ndarray | float = 0.0,
+    *,
+    rtol: float = 1e-12,
+    max_iter: int = 200,
+) -> GroupedLineFit:
+    """
+    Best common slope through several groups of points, each with its own
+    intercept, with errors in ``x`` and ``y``.
+
+    York et al. (2004) with the weighted means taken per group: the
+    objective is ``S = Σ W_i (y_i − b·x_i − a_g(i))²`` with York's ``W_i``,
+    minimised over ``b`` and every ``a_g``.  For a gas ratio over a run whose
+    background drifts slowly, the groups are short stretches of time: the
+    slope comes from the covariation *within* each stretch, and a background
+    that changes between stretches goes into the intercepts instead of the
+    slope.
+    With one group it is :func:`york_fit`.
+
+    Parameters
+    ----------
+    x, y : np.ndarray
+        Coordinates, shape ``(n,)``, finite.
+    sx, sy : np.ndarray
+        1σ errors, shape ``(n,)``, finite and positive.
+    groups : np.ndarray
+        Group label of each point, shape ``(n,)``; every group needs at least
+        two points.
+    r : np.ndarray or float
+        Error correlation of each point, in ``(−1, 1)``.
+    rtol, max_iter
+        As for :func:`york_fit`.
+
+    Returns
+    -------
+    GroupedLineFit
+
+    Raises
+    ------
+    RegressionError
+        Mismatched shapes, non-finite values, invalid errors or correlations,
+        a group of one point, no spread in ``x`` within any group, too few
+        degrees of freedom, or no convergence.
+    """
+    # Ref: York et al. (2004), section III, with steps 4 and 7 per group.
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    groups = np.asarray(groups)
+    if not (x.shape == y.shape == groups.shape and x.ndim == 1):
+        raise RegressionError(f"x, y and groups must be 1-D and of equal length, got shapes "
+                              f"{x.shape}, {y.shape}, {groups.shape}")
+    if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
+        raise RegressionError("x and y must be finite")
+    sx = np.broadcast_to(np.asarray(sx, dtype=float), x.shape)
+    sy = np.broadcast_to(np.asarray(sy, dtype=float), x.shape)
+    for name, s in (("sx", sx), ("sy", sy)):
+        if not (np.all(np.isfinite(s)) and np.all(s > 0)):
+            raise RegressionError(f"{name} must be finite and positive")
+    rr = np.broadcast_to(np.asarray(r, dtype=float), x.shape)
+    if not np.all(np.abs(rr) < 1):
+        raise RegressionError("Error correlations r must lie in (-1, 1)")
+    order, g = np.unique(groups, return_inverse=True)
+    n, n_groups = x.size, order.size
+    counts = np.bincount(g, minlength=n_groups)
+    if counts.min() < 2:
+        raise RegressionError(f"every group needs at least 2 points; group "
+                              f"{order[np.argmin(counts)]!r} has {counts.min()}")
+    if n - n_groups - 1 < 1:
+        raise RegressionError(f"{n} points in {n_groups} groups leave no degree of freedom")
+
+    def gmean(values: np.ndarray, W: np.ndarray) -> np.ndarray:
+        """Weighted mean of each point's group, broadcast back to the points."""
+        return (np.bincount(g, W * values, n_groups) / np.bincount(g, W, n_groups))[g]
+
+    kx, ky = sx.min(), sy.min()
+    wx, wy = (kx / sx) ** 2, (ky / sy) ** 2
+    X, Y = x / kx, y / ky
+    alpha = np.sqrt(wx * wy)
+    one = np.ones_like(X)
+    U0, V0 = X - gmean(X, one), Y - gmean(Y, one)
+    if not np.any(U0 != 0):
+        raise RegressionError("x has no spread within any group; the slope is undefined")
+    b = np.sum(U0 * V0) / np.sum(U0 * U0)                 # step 1: pooled OLS start
+
+    def state(b: float):
+        W = wx * wy / (wx + b * b * wy - 2.0 * b * rr * alpha)
+        Xg, Yg = gmean(X, W), gmean(Y, W)
+        U, V = X - Xg, Y - Yg
+        beta = W * (U / wy + b * V / wx - (b * U + V) * rr / alpha)
+        return W, Xg, Yg, U, V, beta
+
+    for it in range(1, max_iter + 1):
+        W, _, _, U, V, beta = state(b)
+        b_new = np.sum(W * beta * V) / np.sum(W * beta * U)
+        converged = abs(b_new - b) <= rtol * max(abs(b_new), np.finfo(float).tiny)
+        b = b_new
+        if converged:
+            break
+    else:
+        raise RegressionError(f"grouped York regression did not converge in {max_iter} "
+                              f"iterations (last slope {b * ky / kx:.6g})")
+
+    W, Xg, Yg, U, V, beta = state(b)
+    a = Yg - b * Xg                                       # per point, its group's
+    xfit = Xg + beta
+    u = xfit - gmean(xfit, W)
+    var_b = 1.0 / np.sum(W * u * u)
+    S = np.sum(W * (Y - b * X - a) ** 2)
+    mswd = S / (n - n_groups - 1)
+    slope = b * ky / kx
+    se_b = np.sqrt(var_b) * ky / kx
+    first = np.array([np.flatnonzero(g == k)[0] for k in range(n_groups)])
+    return GroupedLineFit(slope=float(slope), slope_err=float(se_b * max(1.0, np.sqrt(mswd))),
+                          slope_err_internal=float(se_b), intercepts=a[first] * ky,
+                          groups_order=order, mswd=float(mswd), n=int(n),
+                          n_groups=int(n_groups), iterations=it)

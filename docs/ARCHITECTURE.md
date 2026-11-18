@@ -24,15 +24,16 @@ the run folder (`plumeIR/output.py`).
 |---|---|---|---|
 | 1. Read and check the config | `config/` | `build_from_config(path)` | typed config objects, one `ParameterSet` per window |
 | 2. Find and read spectra | `spectra/` | `load_spectra(data_config)` | `Spectrum` objects, sorted by time |
-| 3. Prepare spectra | `preprocess/` | `preprocess_spectra(spectra, geometry, data)` | calibrated / background-corrected `Spectrum` |
+| 3. Prepare spectra | `preprocess/` | `preprocess_spectra(spectra, geometry, data, preprocess)` | calibrated / background-corrected `Spectrum` |
 | 4. Pre-compute cross-sections | `reference/` | `build_reference_for(geometry, window, ...)` | one `Reference` per window (cached on disk) |
 | 5. Model a spectrum | `forward/` | `build_forward_model(reference, params, ...)` | a `ForwardModel`: parameter vector → model spectrum |
 | 6. Fit | `retrieval/` | `iter_retrieval(spectra, references, ...)` | a stream of `SpectrumFits`: one `FitResult` per window, per spectrum |
 | 7. Collect | `retrieval/run.py` | `collect_results(stream, ...)` | the run's table: columns in molec/cm², ppm·m, g/m² |
 
-Steps 1-4 happen once per run; steps 5-6 once per spectrum. Step 4 is the only
-one that calls RFM (through `rfmwrapper`) or Mie code (through `mieEODG`), and
-the only slow one on a first run.
+Steps 1-4 happen once per run; steps 5-6 once per spectrum. Step 4 and the
+whole-spectrum preprocessing that ends `prepare_run` (`preprocess/`, its
+synthetic template) are the only steps that call RFM (through `rfmwrapper`)
+or Mie code (through `mieEODG`), and the only slow ones on a first run.
 
 ---
 
@@ -79,7 +80,8 @@ callable).
 
 | Module | Holds |
 |---|---|
-| `constants.py` | species registry (which gases and aerosols exist), spectral window presets |
+| `species.py` | the species registry: phase, formula, molar mass, elements; aerosol type, refractive-index source, components, density rule |
+| `constants.py` | views of the registry (`RFM_GASES`, `POSSIBLE_AEROSOLS`, `WEIGHTS`), display names and colours, spectral window presets |
 | `standards.py` | default values: species concentrations and sizes, ILS defaults, temperature grids, LUT node grids. Read-only (`MappingProxyType`, non-writeable arrays) |
 | `units.py` | unit conversions (column ↔ concentration, ppm·m, g/m²) |
 | `physics.py` | Planck radiance and brightness temperature |
@@ -107,6 +109,8 @@ callable).
 | How is a MIDAC `.spc` file decoded? | `spectra/spc.py` (`read_spc`, no dependency), used by `spectra/spectrum.py::read_midac` |
 | How are emission spectra calibrated to radiance? | `preprocess/emission.py` |
 | How is instrument drift handled? | `preprocess/drift.py` |
+| Gas composition of finished runs? | `analysis/data.py` (`composition_table`, backgrounds by gas class), `analysis/ratios.py` (`moving_ratio`, `run_ratios`, `pooled_ratio`, `window_spread`), `analysis/components.py` (multi-gas `composition`, `moving_composition`, `rank_table`, molar fractions) on the weighted low-rank fit in `analysis/mlpca.py` (`fit_components`, `fit_offsets`; correlated errors between species); the grouped York line in `regression.py::york_fit_grouped`; plots in `plotting/analysis.py` (ratios) and `plotting/components.py` (composition, donut, stacked fractions); the `plumeIR analyse` command in `analysis/cli.py` (tables and summary `analysis/report.py`, figures `plotting/analysis_report.py`) |
+| The whole-spectrum preprocessing (whole-spectrum measurements before the fits, `*PREPROCESS background / registration`)? | `preprocess/products.py::preprocess_products`, called at the end of `pipeline.py::prepare_run`; `preprocess/`; the synthetic template of the ambient path and plume, over the instrument's range, in `preprocess/template.py`; the additive background from the opaque bands in `preprocess/background.py`; the wavenumber shift and scale by cross-correlation in `preprocess/registration.py`; `preprocess.npz` in `preprocess/archive.py`; its plots in `plotting/preprocess.py` |
 | Which RFM runs are made, and how are they cached? | `reference/gas_lut.py`, `reference/emission_reference.py`; the reference cache key is `reference/reference.py::_reference_cache_key` |
 | What does a run write, and where? | `output.py`; the command line in `__main__.py` |
 | Aerosol optical properties? | `reference/aero_lut.py` (wraps `mieEODG`) |

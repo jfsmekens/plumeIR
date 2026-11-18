@@ -35,12 +35,23 @@ import re
 from pathlib import Path
 
 from plumeIR.config.keys import (
-    DEFAULTS_FIELDS, PATTERNS, SECTION_HELP, Key, defaults_field, lookup,
+    AEROSOL, DEFAULTS_FIELDS, GAS, PATTERNS, SECTION_HELP, Key, defaults_field, lookup,
+    split_species_field,
 )
+from plumeIR.constants import LEGACY_AEROSOL_NAMES, POSSIBLE_GASES
 
 logger = logging.getLogger(__name__)
 
-_NAMED_SECTIONS = {"DATA", "MODEL", "GEOMETRY", "RETRIEVAL", "DEFAULTS", "PLOT"}
+_NAMED_SECTIONS = {"DATA", "MODEL", "GEOMETRY", "PREPROCESS", "RETRIEVAL", "DEFAULTS",
+                   "PLOT"}
+
+#: Keys that moved section: (old section, key) -> new section.  A config that
+#: still has them in the old place is read, with a warning, by
+#: :func:`migrate_moved_keys`.
+MOVED_KEYS: dict[tuple[str, str], str] = {
+    ("GEOMETRY", "subtract_self"): "PREPROCESS",    # 2026-11-15
+    ("GEOMETRY", "self_file"):     "PREPROCESS",    # 2026-11-15
+}
 
 # Column at which inline comments start in the written file
 _COMMENT_COL = 48
@@ -109,6 +120,10 @@ def convert(key: Key | None, text: str) -> object:
         return [tok.strip() for tok in t.split(",") if tok.strip()]
     if key.type == "window":
         return [_number(tok.strip(), float) for tok in t.split(",") if tok.strip()]
+    if key.type == "flags":
+        flag = {"true": True, "false": False}.get(t.lower())
+        return flag if flag is not None else [tok.strip() for tok in t.split(",")
+                                              if tok.strip()]
     if key.type == "bool":
         return {"true": True, "false": False}.get(t.lower(), t)
     if key.type == "int":
@@ -140,6 +155,173 @@ def _parse_value(section: str, key: str, raw: str) -> object:
     return convert(key_spec(section, key), raw)
 
 
+def migrate_moved_keys(raw: dict) -> dict:
+    """
+    Move keys found in their former section (:data:`MOVED_KEYS`) to the new one.
+
+    Returns a copy; the input is not modified.  Each moved key logs a warning
+    naming its new place.  When a key is set in both places the new section
+    wins, and the old value is dropped with a warning.
+
+    Parameters
+    ----------
+    raw : dict
+        A raw config dict (:func:`read_config` output, or a client's).
+
+    Returns
+    -------
+    dict
+        The config with every moved key in its current section.
+    """
+    out = dict(raw)
+    for (old, name), new in MOVED_KEYS.items():
+        section = out.get(old)
+        if not isinstance(section, dict) or name not in section:
+            continue
+        old_section = dict(section)
+        value = old_section.pop(name)
+        new_section = dict(out.get(new) or {})
+        if name in new_section:
+            logger.warning("%s.%s is also set in *%s; the *%s value is used and "
+                           "the *%s one ignored", old, name, new, new, old)
+        else:
+            new_section[name] = value
+            logger.warning("%s.%s has moved to *%s; read from *%s here. Move it "
+                           "to *%s in the config file.", old, name, new, old, new)
+        out[old] = old_section
+        out[new] = new_section
+    return out
+
+
+def _legacy(name: str, aerosols_here: set[str]) -> str | None:
+    """
+    The current name of a former aerosol name, or ``None``.
+
+    ``name`` may carry an ``r0_`` / ``wt_`` prefix.  A former name that is
+    also a gas (``HNO3``) is renamed only where it was used as an aerosol
+    (``aerosols_here``); ``H2SO4`` is always an aerosol in a config.
+    """
+    for prefix in ("", "r0_", "wt_"):
+        if not name.startswith(prefix):
+            continue
+        base = name[len(prefix):]
+        new = LEGACY_AEROSOL_NAMES.get(base) or LEGACY_AEROSOL_NAMES.get(base.upper())
+        if new is None:
+            continue
+        legacy = base.upper() if base.upper() in LEGACY_AEROSOL_NAMES else base
+        if legacy in POSSIBLE_GASES and legacy not in aerosols_here:
+            return None
+        return prefix + new
+    return None
+
+
+def migrate_species_names(raw: dict) -> dict:
+    """
+    Rename former aerosol names (:data:`~plumeIR.constants.LEGACY_AEROSOL_NAMES`)
+    to the current ones: ``H2SO4`` → ``H2SO4_aq``, ``HNO3`` → ``HNO3_aq``.
+
+    Returns a copy; logs one warning listing what was renamed.  Covers a
+    window's ``plume_aero`` and ``targets`` (also ``r0_`` / ``wt_``
+    parameters), ``*DEFAULTS`` fields (``h2so4_size`` → ``h2so4_aq_size``),
+    ``*RETRIEVAL`` ``sigma_prior_<param>`` and ``*PLOT`` ``ratios``.
+    ``HNO3`` is also a gas: it is renamed only where the config uses it as an
+    aerosol (in some window's ``plume_aero``), and its ``*DEFAULTS`` fields
+    only for aerosol-only fields.
+
+    Parameters
+    ----------
+    raw : dict
+        A raw config dict.
+
+    Returns
+    -------
+    dict
+    """
+    out = dict(raw)
+    renamed: set[str] = set()
+    aerosols = {str(a) for f in raw.get("fits") or [] for a in (f.get("plume_aero") or [])
+                if isinstance(a, str)}
+    aerosols = {a.upper() if a.upper() in LEGACY_AEROSOL_NAMES else a for a in aerosols}
+
+    def rename(name):
+        if not isinstance(name, str):
+            return name
+        new = _legacy(name, aerosols)
+        if new is None:
+            return name
+        renamed.add(f"{name} → {new}")
+        return new
+
+    def rename_list(values):
+        if isinstance(values, (list, tuple)):
+            return [rename(v) for v in values]
+        return rename(values) if isinstance(values, str) else values
+
+    fits = []
+    for f in raw.get("fits") or []:
+        f = dict(f)
+        here = {a.upper() for a in (f.get("plume_aero") or []) if isinstance(a, str)}
+        if "plume_aero" in f:
+            f["plume_aero"] = rename_list(f["plume_aero"])
+        for key in ("fit_size_aero", "fit_aero_composition"):   # lists of aerosols
+            if isinstance(f.get(key), (list, tuple, str)) and not isinstance(f[key], bool):
+                f[key] = rename_list(f[key])
+        if "targets" in f and isinstance(f["targets"], (list, tuple)):
+            # a target is renamed where its window uses it as an aerosol
+            f["targets"] = [rename(t) if isinstance(t, str) and _legacy(t, here) else t
+                            for t in f["targets"]]
+        fits.append(f)
+    if "fits" in raw:
+        out["fits"] = fits
+    aero_fields = set(DEFAULTS_FIELDS[AEROSOL]) - set(DEFAULTS_FIELDS[GAS])
+    if isinstance(raw.get("DEFAULTS"), dict):
+        section = {}
+        for key, value in raw["DEFAULTS"].items():
+            new_key = key
+            split = split_species_field(key)
+            if split is not None:
+                species, field = split
+                legacy = species.upper()
+                if legacy in LEGACY_AEROSOL_NAMES and (
+                        legacy not in POSSIBLE_GASES
+                        or (legacy in aerosols and field in aero_fields)):
+                    new_key = f"{LEGACY_AEROSOL_NAMES[legacy].lower()}_{field}"
+                    renamed.add(f"{key} → {new_key}")
+            section[new_key] = value
+        out["DEFAULTS"] = section
+    if isinstance(raw.get("RETRIEVAL"), dict):
+        section = {}
+        for key, value in raw["RETRIEVAL"].items():
+            if key in ("fit_size_aero", "fit_aero_composition") and \
+                    isinstance(value, (list, tuple, str)) and not isinstance(value, bool):
+                value = rename_list(value)
+            new_key = key
+            if key.startswith("sigma_prior_"):
+                new = _legacy(key[len("sigma_prior_"):], aerosols)
+                if new is not None:
+                    new_key = "sigma_prior_" + new.lower()
+                    renamed.add(f"{key} → {new_key}")
+            section[new_key] = value
+        out["RETRIEVAL"] = section
+    if isinstance(raw.get("PLOT"), dict) and raw["PLOT"].get("ratios"):
+        plot = dict(raw["PLOT"])
+        ratios = plot["ratios"]
+        items = ratios if isinstance(ratios, (list, tuple)) else [ratios]
+        new_items = []
+        for item in items:
+            if isinstance(item, str) and ":" in item:
+                y, x = (part.strip() for part in item.split(":", 1))
+                new_items.append(f"{rename(y)}:{rename(x)}")
+            else:
+                new_items.append(item)
+        plot["ratios"] = new_items if isinstance(ratios, (list, tuple)) else new_items[0]
+        out["PLOT"] = plot
+    if renamed:
+        logger.warning("Former aerosol names renamed (acid aerosols are now <ACID>_aq, "
+                       "2026-11-17): %s. Update the config file.", ", ".join(sorted(renamed)))
+    return out
+
+
 def normalise(raw: dict) -> dict:
     """
     Convert the text values of a raw config dict by their declared types.
@@ -160,6 +342,7 @@ def normalise(raw: dict) -> dict:
     dict
         A converted copy (sections copied, values shared).
     """
+    raw = migrate_species_names(migrate_moved_keys(raw))
     out = dict(raw)
     for section in _NAMED_SECTIONS:
         if isinstance(raw.get(section), dict):
@@ -268,7 +451,7 @@ def read_config(path: str | Path) -> dict:
 
     n_fits = len(result["fits"])
     logger.debug("Parsed '%s': %d fit window(s)", path.name, n_fits)
-    return result
+    return migrate_species_names(migrate_moved_keys(result))
 
 
 def section_comment(section: str) -> list[str]:
@@ -337,7 +520,8 @@ def write_config(config: dict, path: str | Path) -> None:
     output.append("#" * banner_width)
     output.append("")
 
-    section_order = ["DATA", "MODEL", "GEOMETRY", "RETRIEVAL", "DEFAULTS", "PLOT"]
+    section_order = ["DATA", "MODEL", "GEOMETRY", "PREPROCESS", "RETRIEVAL", "DEFAULTS",
+                     "PLOT"]
 
     for section in section_order:
         data = config.get(section, {})

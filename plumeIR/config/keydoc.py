@@ -24,8 +24,9 @@ _INTRO = """\
 Generated from `plumeIR/config/keys.py` by `python -m plumeIR.config.keydoc`;
 do not edit by hand.
 
-A config is a text file of sections, `*DATA`, `*MODEL`, `*GEOMETRY`,
-`*RETRIEVAL`, `*DEFAULTS`, the optional `*PLOT`, and one `*FIT0`, `*FIT1`, ...
+A config is a text file of sections, `*DATA`, `*MODEL`, `*GEOMETRY`, the
+optional `*PREPROCESS`, `*RETRIEVAL`, `*DEFAULTS`, the optional `*PLOT`, and
+one `*FIT0`, `*FIT1`, ...
 per fit window, each followed by `key : value` lines. `#` starts a comment
 (inside a value only after a space, so a path may contain `#`). Key names are
 case-blind.
@@ -114,7 +115,7 @@ def _key_table(keys: tuple[Key, ...], geometry_column: bool = True) -> list[str]
 def render_reference() -> str:
     """The whole reference, as Markdown."""
     out = [_INTRO]
-    for section in ("DATA", "MODEL", "GEOMETRY", "RETRIEVAL", "PLOT", "FIT"):
+    for section in ("DATA", "MODEL", "GEOMETRY", "PREPROCESS", "RETRIEVAL", "PLOT", "FIT"):
         title = "*FITn" if section == "FIT" else f"*{section}"
         out += [f"## `{title}`", "", SECTION_HELP[section] + ".", ""]
         if section == "FIT":

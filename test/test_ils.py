@@ -92,26 +92,30 @@ class TestKernelProperties:
 # Smoothness in fov — the reason this module exists
 # =============================================================================
 
-class TestFovShiftIsExact:
+class TestFovOnlyBroadens:
     """
-    Regression (2026-11-14): the FOV shift was a linear interpolation of the
-    finished kernel, which smooths it by an amount set by the shift's
-    fractional part (peak −0.3% at half a sample, none at whole samples).
-    Fitted fov settled where the shift is a whole number of model samples:
-    0.0175 rad and the 0.001 bound in the layer CO window, from any start.
+    Convention A (2026-11-16): the kernel models the FOV's broadening only;
+    its displacement of line centres (ν·fov²/16) is left to the wavenumber
+    registration and ``nu_shift``.  Before that the shift was in the kernel,
+    first by interpolation, which smoothed it by an amount set by its
+    fractional part so that fitted fov snapped to whole-sample shifts (0.0175
+    rad and the 0.001 bound in the layer CO window), then exactly by a phase
+    factor (2026-11-14 to 2026-11-16).
     """
 
-    @pytest.mark.parametrize("n_samples", [0.5, 1.0, 3.25])
-    def test_centroid_follows_the_shift(self, n_samples):
-        """The FOV shift is ν·fov²/16, to lower wavenumber, at any fraction.
-        (Hann: NB and boxcar ring as 1/x, so their centroid depends on where
-        the kernel is cut.)"""
-        nu, dnu = 2085.0, 1.0 / NPER_WN
-        fov = 4.0 * np.sqrt(n_samples * dnu / nu)
-        k = build(fov=fov, max_opd=1.037, wn_center=nu, apod_type="Hann",
+    @pytest.mark.parametrize("fov", [0.0, 0.0124, 0.05, 0.15])
+    def test_centroid_stays_at_zero(self, fov):
+        """No displacement at any fov.  (Hann: NB and boxcar ring as 1/x, so
+        their centroid depends on where the kernel is cut.)"""
+        dnu = 1.0 / NPER_WN
+        k = build(fov=fov, max_opd=1.037, wn_center=2085.0, apod_type="Hann",
                   trim_opd=1.037, trim_fov=0.2)
-        assert (k.wn_grid * k.kernel).sum() == pytest.approx(-n_samples * dnu,
-                                                             abs=1e-3 * dnu)
+        assert abs((k.wn_grid * k.kernel).sum()) < 1e-6 * dnu
+
+    @pytest.mark.parametrize("fov", [0.0124, 0.05])
+    def test_kernel_symmetric_at_finite_fov(self, fov):
+        k = build(fov=fov, max_opd=1.037, wn_center=2085.0, trim_fov=0.2)
+        assert np.allclose(k.kernel, k.kernel[::-1], atol=1e-12 * k.kernel.max())
 
     def test_fitted_fov_does_not_snap_to_whole_sample_shifts(self):
         from scipy.optimize import least_squares
@@ -132,7 +136,7 @@ class TestFovShiftIsExact:
             return p[2] * apply_shift_offset(apply_ils(F, k), wn, wm,
                                              shift=p[1], offset=0.0)
 
-        true_fov = 0.0124                  # a half-sample shift at 2085 cm⁻¹
+        true_fov = 0.0124                  # a half-sample FOV shift at 2085 cm⁻¹
         y = model((true_fov, -0.3, 1.0))
         for start in (0.005, 0.021, 0.03):  # the old kernel: 0.001-0.0175
             r = least_squares(lambda p: model(p) - y, [start, -0.25, 1.0],

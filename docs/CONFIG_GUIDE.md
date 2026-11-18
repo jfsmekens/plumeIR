@@ -67,12 +67,15 @@ keys.
 1. `*GEOMETRY type`: the measurement you made decides most of what follows.
 2. `*DATA`: where the spectra are and which files to use.
 3. `*GEOMETRY`: the physical setup, measured at collection.
-4. `*FITn`: one section per spectral window: its range, the gases and
+4. `*PREPROCESS`: what is done to the spectra before the fits (layer: the
+   instrument's self-emission; both geometries: the whole-spectrum preprocessing, which
+   by default only reports).
+5. `*FITn`: one section per spectral window: its range, the gases and
    aerosols in it, and the targets.
-5. `*RETRIEVAL`: usually only the instrument line shape needs a thought.
-6. `*PLOT`: the gas ratios to show and report.
-7. `*DEFAULTS`: only to change a species' reference amount or bounds.
-8. `*MODEL`: leave as is unless you have a reason.
+6. `*RETRIEVAL`: usually only the instrument line shape needs a thought.
+7. `*PLOT`: the gas ratios to show and report.
+8. `*DEFAULTS`: only to change a species' reference amount or bounds.
+9. `*MODEL`: leave as is unless you have a reason.
 
 Then try it on a few spectra (`max_spec : 20` in `*DATA`) before the full run.
 
@@ -106,8 +109,6 @@ thickness `plume_thickness` somewhere along it, in front of a hot source.
 | `fit_atm_temp` | fit the ambient temperature | **usually False**; see below |
 | `fit_source_temp` | fit the source temperature | |
 | `model_gas_emission` | add the hot gas's own emission | **thermal-infrared windows only** (section 5.7) |
-| `subtract_self` | subtract the instrument's own emission | needs a spectrum with "self" in its name in the data folder, or `self_file` |
-| `self_file` | that spectrum, if it is named otherwise | |
 | `no_gas` | not available in v3.0 | must be False |
 | `path_tracer` | `CH4` or `N2O`: a check on `pathlength` | optional; see below |
 
@@ -167,7 +168,6 @@ space); the plume sits between them.
 | `bb_drift`, `clear_drift` | correct blackbody and clear-sky drift over the series | default True |
 | `use_bbt` | fit brightness temperature instead of radiance | |
 | `fit_difference` | not supported in v3.0 | must be False |
-| `subtract_self` | has no effect in emission | the blackbody calibration already removes the instrument's emission |
 | `obs_temp`, `obs_rh` | not used in v3.0 | |
 
 **Emission data files.** The spectra are calibrated with two blackbody
@@ -176,6 +176,45 @@ folder by name: files whose names contain `bbc` and `bbh` are the blackbody
 targets (which one is hot and which cold is read from the temperature in the
 file, not from the name), and files containing `clear` or `sky` are the
 clear-sky reference. These files are never fitted as scene spectra.
+
+### 3.3 `*PREPROCESS`: before the fits
+
+Optional. What is done to the spectra after they are read and before any
+window is fitted.
+
+| Key | What to put | Notes |
+|---|---|---|
+| `subtract_self` | layer: subtract the instrument's own emission | needs a spectrum with "self" in its name in the data folder, or `self_file`; default False. Emission: no effect (the blackbody calibration already removes the instrument's emission) |
+| `self_file` | layer: that spectrum, if it is named otherwise | |
+
+Both keys were in `*GEOMETRY` before; a config that still has them there is
+read, with a warning naming the new place.
+
+**Whole-spectrum preprocessing** (new, 2026-11-16): before the fits, each spectrum is
+measured as a whole against a synthetic spectrum the run builds once (one RFM
+run each for the ambient path and a plume, over the instrument's range;
+cached). Each product is `off`, `report` (the default: measured and written
+to `preprocess.csv` and `summary.txt`, the fits unchanged) or `apply`.
+
+| Key | What it does | Notes |
+|---|---|---|
+| `background` | layer: the additive background of each single beam, from the bands the ambient path makes black: the self-emission scale `a` (the self file is ~16% too strong on the validation set) and a zero level per band | `apply` subtracts it instead of the self spectrum, without clipping. Flags: `a` outside 0.5-1.2, or a held-out band missed by > 1% of the continuum |
+| `reference_spectra` | layer: how many spectra, from the start of the series, make the reference for the relative scale | default 10. The scale `env_scale` is each spectrum's broadband level against that reference (fill fraction × emissivity × broadband attenuation such as aerosol) |
+| `registration` | layer and emission: the shift and scale of the wavenumber axis, by cross-correlation in sub-bands | `apply` corrects each spectrum's axis before the fits, with that spectrum's own shift and scale; `nu_shift` is still fitted and then holds only what is left (~0.01 cm⁻¹) |
+
+Whenever preprocessing runs, `preprocess.csv` also describes each spectrum:
+its top-hull peak, where it is and the integrated hull (`env_peak`,
+`env_peak_wn`, `env_integral`); layer, the relative scale `env_scale`;
+emission, `env_bt_opaque`, the brightness temperature of the opaque bands,
+which is the air temperature next to the instrument in kelvin.
+
+Measured on the validation sets: `apply` moves layer columns by ≤ 1%
+(background: SO2 ×0.993, HCl ×0.992; registration: CO ×0.994) and raises the
+emission R² from 0.99754 to 0.99771. The stage adds about 35 s per 418
+layer spectra (5 s per 300 emission spectra) to a run. Report mode lets you
+check the numbers on your own data before switching a product to `apply`;
+`plumeIR CONFIG --preprocess-only` does only that (spectra, references, these
+measurements, `preprocess.csv` and the summary) and fits nothing.
 
 ---
 
@@ -220,7 +259,7 @@ Windows used for the validated results:
 | layer | 2450-2550 | SO2 | ambient H2O, N2O, CH4 |
 | layer | 2690-2830 | HCl | ambient H2O, N2O, CH4 |
 | layer | 2020-2150 | CO, CO2 | ambient N2O, H2O, CO2 |
-| emission | 750-1250 | SO2, H2SO4 and ash aerosol | water and other atmospheric gases from the profile |
+| emission | 750-1250 | SO2, H2SO4_aq and ash aerosol | water and other atmospheric gases from the profile |
 
 ### 5.2 Gases: `atm_gases` and `plume_gases`
 
@@ -246,10 +285,15 @@ ratios then means the plume part.
 
 ### 5.3 Aerosols: `plume_aero`
 
-Aerosols in the plume, e.g. `H2SO4`, `ASH`, `WATER`, `ICE`. Each adds a mass
-column (named like the species) and an effective radius `r0_<species>` [µm];
-H2SO4 also has a composition `wt_H2SO4` (weight fraction), held fixed unless
-`fit_aero_composition` is True. Aerosols are broad features: use them in wide
+Aerosols in the plume, e.g. `H2SO4_aq`, `HNO3_aq`, `ASH`, `WATER`, `ICE`.
+Each adds a mass column (named like the species) and an effective radius
+`r0_<species>` [µm]. The acid aerosols are binary solutions of acid and
+water, named `<ACID>_aq` so that no name is both a gas and an aerosol (gas
+`HNO3` exists, and `H2SO4` can be a gas); their mass column is the whole
+droplet, acid and water. `H2SO4_aq` also has a composition `wt_H2SO4_aq`
+(acid weight fraction), held fixed unless `fit_aero_composition` is True;
+`HNO3_aq` is fixed at 50 wt% by its refractive index. The former names
+`H2SO4` and `HNO3` (as an aerosol) are still read, with a warning. Aerosols are broad features: use them in wide
 windows where their spectral shape is constrained (validated in the emission
 geometry, 750-1250 cm⁻¹).
 
@@ -295,7 +339,16 @@ every coefficient is well conditioned.
 ### 5.6 Temperatures per window
 
 `fit_gas_temp`, `fit_atm_temp` and `model_gas_emission` can be set per
-window, overriding `*GEOMETRY` (leave them out to inherit).
+window, overriding `*GEOMETRY` (leave them out to inherit). Likewise
+`fit_size_aero` and `fit_aero_composition` override `*RETRIEVAL` in one
+window. Both take `True`, `False`, or a list of aerosols: only those named
+are fitted, the others held, e.g.
+
+    fit_size_aero        : ASH          # ash's radius fitted, the sulphate's held
+    fit_aero_composition : H2SO4_aq
+
+The emission data do not constrain the sulphate composition: hold it at a
+value set from temperature and humidity rather than fitting it.
 
 **`plume_temp_from : FIT0`** (layer only) holds this window's plume
 temperature at the value fitted in another window, spectrum by spectrum. The
@@ -377,7 +430,7 @@ in both roles, it applies to the ambient part.
 | `use_bounds` | keep True |
 | `update_params` | start each fit from the previous spectrum's result; serial runs only, so not with `--parallel` |
 | `fit_size_aero` | fit the aerosol radius (default True) |
-| `fit_aero_composition` | fit the H2SO4 weight fraction (default False) |
+| `fit_aero_composition` | fit the H2SO4_aq weight fraction (default False) |
 | `use_babs_aero` | has no effect in v3.0: the emission model always attenuates with aerosol extinction and emits with aerosol absorption |
 
 ---
@@ -464,8 +517,10 @@ atm_temp      : 284                      # K, measured at collection
 atm_pres      : 973                      # mbar, measured at collection
 plume_temp    : 450                      # K, starting value
 plume_pres    : 973                      # mbar
-subtract_self : True                     # needs a *self* spectrum in data_dir
 path_tracer   : CH4                      # check pathlength with *FIT5's CH4
+
+*PREPROCESS
+subtract_self : True                     # needs a *self* spectrum in data_dir
 
 *RETRIEVAL
 retrieval_method : nlls
@@ -495,8 +550,8 @@ fit           : True
 fit_window    : 750, 1250
 atm_gases     : H2O, CO2, N2O, CH4
 plume_gases   : SO2
-plume_aero    : H2SO4
-targets       : H2SO4
+plume_aero    : H2SO4_aq
+targets       : H2SO4_aq
 polydeg       : 2
 plume_temp_from : FIT0
 
@@ -528,7 +583,7 @@ polydeg       : 2
 plume_temp_from : FIT0
 
 *PLOT
-ratios        : HCl:SO2, CO2:SO2, H2O:SO2, HF:SO2, H2SO4:SO2
+ratios        : HCl:SO2, CO2:SO2, H2O:SO2, HF:SO2, H2SO4_aq:SO2
 regression    : odr
 rh            : 65                       # % at collection, for the H2O background
 ```
@@ -557,11 +612,11 @@ fit           : True
 fit_window    : 750, 1250
 atm_gases     : H2O, CO2, O3
 plume_gases   : SO2
-plume_aero    : H2SO4, ASH
-targets       : SO2, H2SO4, ASH
+plume_aero    : H2SO4_aq, ASH
+targets       : SO2, H2SO4_aq, ASH
 
 *PLOT
-ratios        : H2SO4:SO2, ASH:SO2
+ratios        : H2SO4_aq:SO2, ASH:SO2
 ```
 
 ---

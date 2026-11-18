@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from plumeIR.constants import POSSIBLE_AEROSOLS
+from plumeIR.constants import H2SO4_AQ, POSSIBLE_AEROSOLS
 from plumeIR.config.objects import (
     FitWindowConfig,
     GeometryType,
@@ -260,7 +260,7 @@ def build_reference(
 
         # Layer geometry needs only extinction (transmittance); the emission
         # builder requests absorption too (with_absorption=True).
-        if species == "H2SO4":
+        if species == H2SO4_AQ:
             aero_luts[species] = AerosolLUT.build_h2so4_2d(
                 wn            = wn_out,
                 ref_mass_g_m2 = float(ref_mass),

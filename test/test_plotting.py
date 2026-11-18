@@ -223,7 +223,7 @@ class TestPlotConfig:
                              base_dir=tmp_path)
         monkeypatch.setattr(pipeline, "build_reference_for", lambda *a, **k: None)
         monkeypatch.setattr(pipeline, "load_spectra", lambda data: ["S0"])
-        monkeypatch.setattr(pipeline, "preprocess_spectra", lambda s, g, d: s)
+        monkeypatch.setattr(pipeline, "preprocess_spectra", lambda s, g, d, p: s)
         monkeypatch.setattr(pipeline, "resolve_instrument_ils", lambda r, s: r)
         assert pipeline.prepare_run(cfg).plot.ratios == (("HCl", "SO2"),)
 
@@ -739,6 +739,80 @@ class TestStoredFits:
     def test_missing_file_names_the_problem(self, tmp_path):
         with pytest.raises(RunFolderError, match="fits.npz"):
             read_fits(tmp_path)
+
+    @staticmethod
+    def _with_cov(item, rho):
+        import dataclasses
+        fits = []
+        for fr in item.fits:
+            sd = np.array([0.01, fr.perror[fr.varied_names[1]]])
+            cov = np.array([[1.0, rho], [rho, 1.0]]) * np.outer(sd, sd)
+            fits.append(dataclasses.replace(fr, covariance=cov))
+        return SpectrumFits(item.index, item.n_spectra, item.spectrum, tuple(fits))
+
+    def test_covariance_round_trip(self, tmp_path):
+        items = [self._with_cov(_item(i, 3), rho) for i, rho in enumerate((0.5, -0.2, 0.9))]
+        items[1] = SpectrumFits(1, 3, "S1", (items[1].fits[0], _item(1, 3).fits[1]))
+        write_fits(items, tmp_path)
+        archive = read_fits(tmp_path)
+        assert archive.has_covariance
+        np.testing.assert_allclose(archive.correlation("FIT0", "poly0", "SO2"),
+                                   [0.5, -0.2, 0.9])
+        r = archive.correlation("FIT1", "HCl", "poly0")
+        np.testing.assert_allclose(r[[0, 2]], [0.5, 0.9])
+        assert np.isnan(r[1])                      # that fit has no covariance
+        with pytest.raises(KeyError, match="varied"):
+            archive.correlation("FIT0", "poly0", "HCl")
+
+    def test_format_1_is_still_read(self, tmp_path):
+        write_fits([_item(0, 2), _item(1, 2)], tmp_path)
+        with np.load(tmp_path / FITS_NAME) as npz:
+            arrays = {k: npz[k] for k in npz.files if not k.endswith((".varied", ".covariance"))}
+        arrays["format"] = np.asarray(1)
+        np.savez_compressed(tmp_path / FITS_NAME, **arrays)
+        archive = read_fits(tmp_path)
+        assert len(archive) == 2 and not archive.has_covariance
+        with pytest.raises(KeyError, match="format 1"):
+            archive.correlation("FIT0", "poly0", "SO2")
+
+
+class TestRunStateCorrelation:
+    """A ratio of two gases from one window uses their fit's error correlation."""
+
+    def test_same_window_ratio(self):
+        from plumeIR.plotting.state import fit_correlation
+        from plumeIR.regression import york_fit
+        w = FitWindowConfig(label="FIT0", wn_start=2400.0, wn_stop=2550.0, atm_gases=(),
+                            plume_gases=("SO2", "HCl"), plume_aero=(), targets=("SO2", "HCl"),
+                            polydeg=0)
+        ps = ParameterSet([
+            Parameter("poly0", 1.0, True, (-np.inf, np.inf), ParameterKind.POLYNOMIAL),
+            Parameter("SO2", 1.0, True, (0.0, np.inf), ParameterKind.GAS_PLUME,
+                      ref_column=SO2_REF),
+            Parameter("HCl", 1.0, True, (0.0, np.inf), ParameterKind.GAS_PLUME,
+                      ref_column=HCL_REF)])
+        state = RunState(["SO2", "HCl"], ratios=[("HCl", "SO2")], regression="odr",
+                         windows={"FIT0": w}, params={"FIT0": ps})
+        rho = -0.6
+        wn = np.linspace(2400.0, 2550.0, 40)
+        for i in range(8):
+            so2 = _so2(i)
+            hcl = RATIO * so2 + BACKGROUND + 1e15 * np.sin(3 * i)
+            vals = {"poly0": 1.0, "SO2": so2 / SO2_REF, "HCl": hcl / HCL_REF}
+            sd = np.array([0.01, 0.01 * vals["SO2"], 0.01 * vals["HCl"]])
+            c = np.eye(3)
+            c[1, 2] = c[2, 1] = rho
+            fr = FitResult(success=True, method="nlls", varied_names=("poly0", "SO2", "HCl"),
+                           values=vals, perror=dict(zip(vals, sd)),
+                           covariance=c * np.outer(sd, sd), wn=wn, measured=wn * 0 + 1,
+                           model=wn * 0 + 1, rmse=0.0, nfev=1, message="ok",
+                           window_label="FIT0", spectrum_id=f"2021-08-11T10:00:{i:02d}")
+            assert fit_correlation(fr, "HCl", "SO2") == pytest.approx(rho)
+            state.add(SpectrumFits(i, 8, f"S{i}", (fr,)))
+        np.testing.assert_allclose(state.ratio_correlation(("HCl", "SO2")), rho)
+        x, y, sx, sy = state.ratio_points(("HCl", "SO2"))
+        assert state.ratio_fit(("HCl", "SO2")).slope == pytest.approx(
+            york_fit(x, y, sx, sy, rho).slope, rel=1e-10)
 
 
 class TestRunStateFromRunDir:

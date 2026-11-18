@@ -156,6 +156,33 @@ def _only_run_dir(parent: Path) -> Path:
 
 class TestCommandLine:
 
+    def test_preprocess_only_fits_nothing(self, tmp_path, patched_cli, monkeypatch):
+        import pandas as _pd
+        from dataclasses import replace as _replace
+        from plumeIR.preprocess.products import PreprocessReport
+        reg = {k: [v, v] for k, v in dict(
+            reg_eps=-1.5e-4, reg_eps_origin=-1.5e-4, reg_s0=0.0, reg_s0_err=0.01,
+            reg_nu_mid=2500.0, reg_lag_mid=-0.375,
+            reg_rms=0.03, reg_n_used=50, reg_n_bands=55).items()}
+        report = PreprocessReport("off", "report", _pd.DataFrame(
+            {"spectrum_id": ["a", "b"], **reg}))
+        setup = _replace(_fake_setup(), preprocess_report=report)
+        monkeypatch.setattr(cli, "prepare_run", lambda cfg, **kw: setup)
+        monkeypatch.setattr(cli, "stream_run", lambda *a, **k: pytest.fail("fitted"))
+        out = tmp_path / "runs"
+        assert cli.main([str(_layer_ini(tmp_path)), "--preprocess-only",
+                         "--output-dir", str(out)]) == 0
+        run_dir = _only_run_dir(out)
+        assert (run_dir / "preprocess.csv").is_file()
+        assert not (run_dir / "results_long.csv").exists()
+        summary = (run_dir / "summary.txt").read_text()
+        assert "no fits" in summary and "preprocess      background off" in summary
+        assert "registration    eps median -1.5000e-04" in summary
+
+    def test_preprocess_only_refuses_plots(self, tmp_path, patched_cli):
+        with pytest.raises(SystemExit):
+            cli.main([str(_layer_ini(tmp_path)), "--preprocess-only", "--plot"])
+
     def test_run_writes_the_run_folder(self, tmp_path, patched_cli):
         cfg = _layer_ini(tmp_path)
         out = tmp_path / "runs"
@@ -223,6 +250,70 @@ class TestCommandLine:
         with pytest.raises(SystemExit) as exc:
             cli.main([str(_layer_ini(tmp_path)), "--workers", "2"])
         assert exc.value.code == 2
+
+    def test_analyse_after_the_run_then_inspect(self, tmp_path, patched_cli, monkeypatch):
+        import plumeIR.analysis.cli as acli
+        order = []
+
+        def fake_analysis(dirs, out_dir, settings=None, *, plots=True):
+            order.append(("analyse", Path(dirs[0]), Path(out_dir)))
+            Path(out_dir).mkdir(exist_ok=True)
+            (Path(out_dir) / "analysis.txt").write_text("composition\n")
+            return [Path(out_dir) / "analysis.txt"]
+
+        monkeypatch.setattr(acli, "run_analysis", fake_analysis)
+        monkeypatch.setattr(cli, "inspect", lambda d: order.append(("inspect", d)) or 0)
+        out = tmp_path / "runs"
+        assert cli.main([str(_layer_ini(tmp_path)), "--output-dir", str(out),
+                         "--analyse", "--inspect"]) == 0
+        run_dir = _only_run_dir(out)
+        assert order == [("analyse", run_dir, run_dir / "analysis"), ("inspect", run_dir)]
+        # the folder, analysed as it is: the same call
+        order.clear()
+        assert cli.main([str(run_dir), "--analyze"]) == 0
+        assert order == [("analyse", run_dir, run_dir / "analysis")]
+
+    def test_failed_analysis_keeps_the_run(self, tmp_path, patched_cli):
+        # the fake run has one target: a composition needs two species
+        out = tmp_path / "runs"
+        assert cli.main([str(_layer_ini(tmp_path)), "--output-dir", str(out),
+                         "--analyse"]) == 1
+        run_dir = _only_run_dir(out)
+        assert (run_dir / "results_long.csv").is_file()
+        assert "Composition analysis failed" in (run_dir / "run.log").read_text()
+
+    def test_stopped_run_is_not_analysed(self, tmp_path, monkeypatch, patched_cli):
+        import plumeIR.analysis.cli as acli
+
+        def interrupted(s, **kw):
+            yield next(_items(s))
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli, "stream_run", interrupted)
+        monkeypatch.setattr(acli, "run_analysis", lambda *a, **k: pytest.fail("analysed"))
+        assert cli.main([str(_layer_ini(tmp_path)), "--output-dir", str(tmp_path / "r"),
+                         "--analyse"]) == 130
+
+    def test_analyse_flag_guards(self, tmp_path, patched_cli):
+        with pytest.raises(SystemExit):
+            cli.main([str(_layer_ini(tmp_path)), "--preprocess-only", "--analyse"])
+        with pytest.raises(SystemExit):
+            cli.main([str(tmp_path), "--analyse", "--parallel"])
+        with pytest.raises(SystemExit):
+            cli.main([str(tmp_path)])
+
+    def test_run_without_fits_loads_for_analysis(self, tmp_path, patched_cli):
+        from plumeIR.exceptions import RunFolderError
+        from plumeIR.output import load_run
+        out = tmp_path / "runs"
+        cli.main([str(_layer_ini(tmp_path)), "--output-dir", str(out)])
+        run_dir = _only_run_dir(out)
+        assert load_run(run_dir).fits is not None
+        (run_dir / "fits.npz").unlink()         # a run written before 2026-11-12
+        with pytest.raises(RunFolderError, match="fits.npz"):
+            load_run(run_dir)
+        run = load_run(run_dir, require_fits=False)
+        assert run.fits is None and len(run.table.df)
 
     def test_config_error_creates_no_folder(self, tmp_path, patched_cli):
         cfg = _layer_ini(tmp_path, geom="no_gas : True")

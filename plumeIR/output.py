@@ -10,9 +10,17 @@ The run output folder: one directory per run, written by any client.
                            git commits where known), spectra loaded and
                            fitted, ILS used, convergence and R² per window,
                            final ratio regressions, and with
-                           GEOMETRY.path_tracer the path check
+                           GEOMETRY.path_tracer the path check, and the
+                           whole-spectrum preprocessing's run-level results
+        preprocess.csv  one row per spectrum: the background and
+                           registration measured before the fits (when either
+                           *PREPROCESS product is not off)
+        preprocess.npz  the spectra as fitted, hulls, background, sub-band
+                           lags: what the preprocessing plots draw
         fits.npz           every fit's measured, model and reference-continuum
-                           spectra, per window (M3c), for ``--inspect``
+                           spectra, per window (M3c), for ``--inspect``, and
+                           its parameter covariance, for the error
+                           correlation of species fitted in one window
         run.log            written by the client's log handler, not here
         plots/             with ``--save-plots``: final figures (canvas.png,
                            fit_<window>.png, timeseries.png, ratio_<y>_<x>.png)
@@ -55,6 +63,7 @@ WIDE_NAME    = "results_wide.csv"
 SUMMARY_NAME = "summary.txt"
 LOG_NAME     = "run.log"
 FITS_NAME    = "fits.npz"
+PREP_NAME    = "preprocess.csv"            # = plumeIR.preprocess.archive.TABLE_NAME
 PLOTS_DIR    = "plots"
 FRAMES_DIR   = "frames"
 
@@ -163,16 +172,82 @@ def write_results(table: ResultsTable, run_dir: Path,
     -------
     tuple of Path
         ``(long_csv, wide_csv)``.  The wide table holds each species' column
-        from the window where it is a declared target (``ResultsTable.wide``);
-        errors, fixed parameters and non-target windows are in the long table.
+        from the window where it is a declared target (``ResultsTable.wide``),
+        and the molecular content of each aerosol (acid and water of a
+        solution, ``ResultsTable.aerosol_components``); errors, fixed
+        parameters and non-target windows are in the long table.
     """
     long_csv, wide_csv = run_dir / LONG_NAME, run_dir / WIDE_NAME
     table.to_csv(long_csv)
     wide = table.wide()
+    components = table.aerosol_components()
+    if not components.empty:      # acid and water content of the aerosols
+        wide = wide.join(components, how="left")
     if tracer is not None and tracer.best is not None:
         wide = wide.join(tracer.per_spectrum(), how="left")
     wide.to_csv(wide_csv)
     return long_csv, wide_csv
+
+
+def write_preprocess(setup, run_dir: Path) -> list[Path]:
+    """
+    Write the whole-spectrum preprocessing: ``preprocess.csv`` and ``.npz``.
+
+    Parameters
+    ----------
+    setup : RunSetup
+        Its ``preprocess_report``, ``spectra`` and ``windows`` are written.
+    run_dir : Path
+
+    Returns
+    -------
+    list of Path
+        The files written; empty when both products were off.
+    """
+    from plumeIR.preprocess.archive import write_preprocess_archive
+    report = getattr(setup, "preprocess_report", None)
+    if report is None or (report.background == "off" and report.registration == "off"):
+        return []
+    path = run_dir / PREP_NAME
+    report.table.to_csv(path, index=False)
+    written = [path]
+    archive = write_preprocess_archive(
+        report, setup.spectra, setup.windows,
+        setup.retrieval.geometry_type.name.lower(), run_dir)
+    if archive is not None:
+        written.append(archive)
+    return written
+
+
+def preprocess_summary(setup, info: RunInfo) -> str:
+    """
+    The summary of a ``--preprocess-only`` run: versions, spectra, the ILS and
+    the whole-spectrum preprocessing, no fits.
+
+    Parameters
+    ----------
+    setup : RunSetup
+    info : RunInfo
+    """
+    retrieval = setup.retrieval
+    lines = [
+        f"plumeIR {__version__} preprocessing summary (no fits)",
+        "",
+        *(f"{name:<16}{desc}" for name, desc in package_versions().items()),
+        "",
+        f"config          {info.config_path if info.config_path else '(built from data)'}",
+        f"started         {info.started:%Y-%m-%d %H:%M:%S}",
+        f"geometry        {retrieval.geometry_type.name.lower()}",
+        f"data            {setup.data.data_dir}",
+        f"spectra loaded  {setup.n_spectra}",
+        f"ILS             max_opd {retrieval.max_opd:.5f} cm, "
+        f"apod {retrieval.apod_type!r}, fov a priori {retrieval.fov:g} rad",
+        "",
+    ]
+    report = getattr(setup, "preprocess_report", None)
+    if report is not None:
+        lines += report.summary_lines()
+    return "\n".join(lines) + "\n"
 
 
 def run_summary(setup, table: ResultsTable, info: RunInfo,
@@ -263,12 +338,18 @@ def run_summary(setup, table: ResultsTable, info: RunInfo,
                                 "intercept", "mswd"], rows)
     if tracer is not None:
         lines += [""] + _tracer_lines(tracer, ratios)
+    char = getattr(setup, "preprocess_report", None)
+    if char is not None and (char.background != "off" or char.registration != "off"):
+        lines += [""] + char.summary_lines()
     lines += [
         "",
         f"{LONG_NAME:<18}every parameter of every fit, with errors",
         f"{WIDE_NAME:<18}target species per spectrum (gases molec/cm2, aerosols g/m2)",
         f"{FITS_NAME:<18}every fit's spectra, for plumeIR RUN_FOLDER --inspect",
     ]
+    if char is not None and (char.background != "off" or char.registration != "off"):
+        lines.append(f"{PREP_NAME:<18}background and registration per spectrum, "
+                     f"measured before the fits")
     return "\n".join(lines) + "\n"
 
 
@@ -340,7 +421,12 @@ def write_summary(text: str, run_dir: Path) -> Path:
 # =============================================================================
 
 #: Layout version of ``fits.npz``; bumped when its keys change meaning.
-FITS_FORMAT = 1
+#: 2 (2026-11-18): adds each fit's parameter covariance (``W.varied``,
+#: ``W.covariance``).  Version 1 files are still read, without it.
+FITS_FORMAT = 2
+
+#: Layout versions :func:`read_fits` reads.
+FITS_FORMATS_READ = (1, 2)
 
 
 @dataclass(frozen=True)
@@ -390,6 +476,41 @@ def _pad(rows: list[np.ndarray | None], width: int) -> np.ndarray:
     return out
 
 
+def _covariances(fits: list) -> tuple[list[str], np.ndarray]:
+    """
+    The varied parameters of a window's fits and their covariances.
+
+    Parameters
+    ----------
+    fits : list of FitResult or None
+        One window's fit of each spectrum (``None`` where it has none).
+
+    Returns
+    -------
+    varied : list of str
+        Every varied name, in the order of the first fit that has it.
+    covariance : np.ndarray
+        Shape ``(n, k, k)``; NaN where a fit has no covariance or did not
+        vary a parameter.
+    """
+    varied: list[str] = []
+    for fr in fits:
+        for name in (() if fr is None else fr.varied_names):
+            if name not in varied:
+                varied.append(name)
+    pos = {name: i for i, name in enumerate(varied)}
+    out = np.full((len(fits), len(varied), len(varied)), np.nan)
+    for i, fr in enumerate(fits):
+        if fr is None or fr.covariance is None:
+            continue
+        c = np.asarray(fr.covariance, dtype=float)
+        if c.shape != (len(fr.varied_names),) * 2:
+            continue
+        j = np.asarray([pos[name] for name in fr.varied_names], dtype=int)
+        out[i][np.ix_(j, j)] = c
+    return varied, out
+
+
 def write_fits(items: Iterable, run_dir: Path) -> Path:
     """
     Store every fit of a run in ``fits.npz``, for inspection after the run.
@@ -423,6 +544,12 @@ def write_fits(items: Iterable, run_dir: Path) -> Path:
         W.measured, W.model    (n, n_wn)
         W.continuum     (n, n_wn), absent when no fit had one; NaN rows
                         where a fit had none
+        W.varied        (k,) str, the varied parameters of the window, in
+                        the optimizer order of its first fit (format 2)
+        W.covariance    (n, k, k), each fit's parameter covariance
+                        (``FitResult.covariance``) in that order; NaN where a
+                        fit has none or did not vary that parameter
+                        (format 2)
 
     Written to a temporary name and renamed, so a folder never holds half a
     file.
@@ -466,6 +593,9 @@ def write_fits(items: Iterable, run_dir: Path) -> Path:
         conts = [None if fr is None else fr.continuum for fr in fits]
         if any(c is not None for c in conts):
             arrays[f"{w}.continuum"] = _pad(conts, width)
+        varied, cov = _covariances(fits)
+        arrays[f"{w}.varied"] = np.asarray(varied, dtype=str)
+        arrays[f"{w}.covariance"] = cov
 
     path = run_dir / FITS_NAME
     tmp = run_dir / (FITS_NAME + ".part")
@@ -517,6 +647,49 @@ class FitArchive:
         """Every window's fit of the ``k``-th spectrum, by label, in window order."""
         return {w: self.fit(k, w) for w in self.windows}
 
+    @property
+    def has_covariance(self) -> bool:
+        """Whether the file holds the fits' covariances (format 2 onwards)."""
+        return all(f"{w}.covariance" in self._a for w in self.windows)
+
+    def correlation(self, window: str, a: str, b: str) -> np.ndarray:
+        """
+        Correlation of the fit errors of parameters ``a`` and ``b`` in
+        ``window``, per spectrum (input order).
+
+        Parameters
+        ----------
+        window : str
+        a, b : str
+            Varied parameter names.
+
+        Returns
+        -------
+        np.ndarray
+            Shape ``(n,)``; NaN where a fit has no covariance, did not vary
+            either parameter, or a variance is not positive.
+
+        Raises
+        ------
+        KeyError
+            For a window without stored covariances (a format 1 file), or a
+            parameter the window never varied.
+        """
+        key = f"{window}.covariance"
+        if key not in self._a:
+            raise KeyError(f"{window}: no covariances stored (fits.npz format 1)")
+        names = [str(v) for v in self._a[f"{window}.varied"]]
+        for name in (a, b):
+            if name not in names:
+                raise KeyError(f"{window}: {name!r} is not a varied parameter "
+                               f"(varied: {names})")
+        c = self._a[key]
+        i, j = names.index(a), names.index(b)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            var_a, var_b = c[:, i, i], c[:, j, j]
+            ok = (var_a > 0) & (var_b > 0)
+            return np.where(ok, c[:, i, j] / np.sqrt(np.where(ok, var_a * var_b, 1.0)), np.nan)
+
 
 def read_fits(run_dir: str | Path) -> FitArchive:
     """
@@ -546,9 +719,9 @@ def read_fits(run_dir: str | Path) -> FitArchive:
     with np.load(path, allow_pickle=False) as npz:
         arrays = {k: npz[k] for k in npz.files}
     version = int(arrays.get("format", -1))
-    if version != FITS_FORMAT:
+    if version not in FITS_FORMATS_READ:
         raise RunFolderError(f"{path}: layout version {version}, this plumeIR "
-                             f"reads version {FITS_FORMAT}")
+                             f"reads versions {FITS_FORMATS_READ}")
     return FitArchive(arrays)
 
 
@@ -566,16 +739,17 @@ class StoredRun:
         ``'plot'``, ...
     table : ResultsTable
         ``results_long.csv``.
-    fits : FitArchive
-        ``fits.npz``.
+    fits : FitArchive or None
+        ``fits.npz``; ``None`` only when loaded with ``require_fits=False``
+        from a run written before fits were stored (2026-11-12).
     """
     run_dir: Path
     config:  dict
     table:   ResultsTable
-    fits:    FitArchive
+    fits:    FitArchive | None
 
 
-def load_run(run_dir: str | Path) -> StoredRun:
+def load_run(run_dir: str | Path, *, require_fits: bool = True) -> StoredRun:
     """
     Reopen a finished run's folder: its config, results table and fits.
 
@@ -586,6 +760,10 @@ def load_run(run_dir: str | Path) -> StoredRun:
     Parameters
     ----------
     run_dir : str or Path
+    require_fits : bool
+        ``False`` accepts a folder without ``fits.npz`` (a run written
+        before fits were stored), with ``fits`` ``None``: enough for the
+        composition analysis, which reads the tables, not for inspection.
 
     Returns
     -------
@@ -606,7 +784,8 @@ def load_run(run_dir: str | Path) -> StoredRun:
         if not (run_dir / name).is_file():
             raise RunFolderError(f"{run_dir} is not a complete plumeIR run "
                                  f"folder: {name} is missing")
-    fits = read_fits(run_dir)
+    fits = read_fits(run_dir) if require_fits or (run_dir / FITS_NAME).is_file() \
+        else None
     try:
         config = build_from_raw(read_config(run_dir / CONFIG_NAME),
                                 base_dir=run_dir)
@@ -616,7 +795,7 @@ def load_run(run_dir: str | Path) -> StoredRun:
     table = ResultsTable.from_csv(run_dir / LONG_NAME)
 
     ids = [str(s) for s in table.df[COL_SPECTRUM].drop_duplicates()]
-    if ids != fits.spectrum_ids:
+    if fits is not None and ids != fits.spectrum_ids:
         raise RunFolderError(
             f"{run_dir}: {LONG_NAME} ({len(ids)} spectra) and {FITS_NAME} "
             f"({len(fits)} spectra) do not hold the same spectra in the same "
