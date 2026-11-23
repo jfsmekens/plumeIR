@@ -25,9 +25,9 @@ Generated from `plumeIR/config/keys.py` by `python -m plumeIR.config.keydoc`;
 do not edit by hand.
 
 A config is a text file of sections, `*DATA`, `*MODEL`, `*GEOMETRY`, the
-optional `*PREPROCESS`, `*RETRIEVAL`, `*DEFAULTS`, the optional `*PLOT`, and
-one `*FIT0`, `*FIT1`, ...
-per fit window, each followed by `key : value` lines. `#` starts a comment
+optional `*PREPROCESS`, `*RETRIEVAL`, `*DEFAULTS`, the optional `*PLOT`,
+one `*FIT0`, `*FIT1`, ... per fit window, and the optional `*PATH` (layer),
+each followed by `key : value` lines. `#` starts a comment
 (inside a value only after a space, so a path may contain `#`). Key names are
 case-blind.
 
@@ -120,7 +120,11 @@ def render_reference() -> str:
         out += [f"## `{title}`", "", SECTION_HELP[section] + ".", ""]
         if section == "FIT":
             out += ["Only active windows (`fit : True`) are checked beyond `fit`; "
-                    "\"required\" means required of an active window.", ""]
+                    "\"required\" means required of an active window.", "",
+                    "`*PATH` (layer, at most one) is a fit window whose only purpose "
+                    "is the path check: it takes the keys below, requires `tracer`, "
+                    "has no `targets`, and is labelled `PATH` in the results. The "
+                    "live display and the inspector show no fit panel for it.", ""]
         keys = section_keys(section)
         out += _key_table(keys, geometry_column=any(k.geometries != ALL for k in keys))
         patterns = [p for p in PATTERNS.values() if p.key.section == section]

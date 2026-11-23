@@ -178,7 +178,7 @@ AERO_DEFAULTS: Mapping[str, Mapping[str, object]] = freeze({
 # ---------------------------------------------------------------------------
 # Spectral / ILS parameter fit bounds
 #
-# Bounds only.  The a priori values are config keys (fov, max_opd, nu_shift,
+# Bounds only.  The a priori values are config keys (fov, max_opd, shift,
 # offset in *RETRIEVAL) and their defaults live in the key catalogue,
 # config/keys.py (M3d, 2026-11-12); the unused "value" entries that duplicated
 # them were removed then.
@@ -187,20 +187,26 @@ AERO_DEFAULTS: Mapping[str, Mapping[str, object]] = freeze({
 ILS_DEFAULTS: Mapping[str, Mapping[str, object]] = freeze({
     "fov":      {"min": 0.001, "max": 0.2},    # [rad]
     "max_opd":  {"min": 0.5,   "max": 5.0},    # [cm]
-    "nu_shift": {"min": -2.0,  "max": 2.0},    # [cm⁻¹]
+    "shift": {"min": -2.0,  "max": 2.0},    # [cm⁻¹]
     "offset":   {"min": -0.5,  "max": 0.5},    # [a.u. or K]
+    # Broad line-shape component (2026-11-23): fraction and Gaussian σ.
+    "broad_frac":  {"min": 0.0,  "max": 0.9},   # [-]
+    "broad_width": {"min": 0.05, "max": 5.0},   # [cm⁻¹]
 })
 
 # ---------------------------------------------------------------------------
 # Temperature parameter fit bounds
 #
 # Bounds only, as for ILS_DEFAULTS: source_temp, dt_prox and dt_dist a priori
-# values are config keys (config/keys.py); gas_temp and atm_temp start from
-# the plume_temp / atm_temp keys.
+# values are config keys (config/keys.py); plume_temp and atm_temp start from
+# the plume_temp / atm_temp keys.  In the layer geometry plume_temp and
+# atm_temp index a gas LUT, so their bounds are the LUT node ranges
+# (PLUME_TEMP_NODES, ATM_TEMP_NODES; config/builder.py), not this table; the
+# layer's former "gas_temp" entry here (300-1000 K) was never read and went
+# with the rename to plume_temp (2026-11-19).
 # ---------------------------------------------------------------------------
 
 TEMP_DEFAULTS: Mapping[str, Mapping[str, object]] = freeze({
-    "gas_temp":    {"min": 300.0, "max": 1000.0},  # [K]
     "atm_temp":    {"min": 250.0, "max":  350.0},  # [K]
     "source_temp": {"min": 800.0, "max": 2000.0},  # [K]
     # Plume temperature is fitted DIRECTLY (not as an offset), so it feeds
@@ -210,7 +216,7 @@ TEMP_DEFAULTS: Mapping[str, Mapping[str, object]] = freeze({
     # advected plume cools adiabatically to within ~10 K of ambient within
     # minutes.  Replaces v2/v3-early "dt_plume", which shifted only the
     # emission level and was therefore exactly degenerate with the column.
-    "plume_temp":  {"below": 5.0,   "above": 15.0},               # [K] about ambient
+    "plume_temp":  {"below": 5.0,   "above": 15.0},  # [K] about ambient (emission, solar)
     "dt_prox":     {"min": -20.0, "max":  20.0},   # [K] proximal layer offset
     "dt_dist":     {"min": -20.0, "max":  20.0},   # [K] distal layer offset
 })
@@ -228,9 +234,59 @@ TEMP_DEFAULTS: Mapping[str, Mapping[str, object]] = freeze({
 # To extend a range, edit here and rebuild the affected LUTs.
 # ---------------------------------------------------------------------------
 
-# Gas temperature grids [K]
-ATM_TEMP_NODES:   np.ndarray = _readonly(np.linspace(250.0, 350.0, 21))   # atmospheric layer
-PLUME_TEMP_NODES: np.ndarray = _readonly(np.linspace(300.0, 1000.0, 25))  # hot volcanic gas
+# Gas temperature axes [K]: a fixed range, and a node spacing the user sets
+# (*MODEL plume_temp_step / atm_temp_step; developer, 2026-11-21).  Linear
+# interpolation between nodes errs as the square of the spacing (×4 per
+# halving, measured): at the former 29.2 K plume spacing (25 nodes) up to
+# 0.28% of the optical depth at the strongest lines and 0.025% in a target
+# column, 40% in the dual-gas plume CO2; at 10 K ~0.03%, ~0.003% and ~5%
+# (docs/CONFIG_GUIDE.md, `*MODEL`).
+ATM_TEMP_RANGE:   tuple[float, float] = (250.0, 350.0)    # atmospheric layer
+PLUME_TEMP_RANGE: tuple[float, float] = (300.0, 1000.0)   # hot volcanic gas (layer)
+DEFAULT_ATM_TEMP_STEP:   float = 5.0    # [K], the catalogue default (config/keys.py)
+DEFAULT_PLUME_TEMP_STEP: float = 10.0   # [K]
+
+
+def temp_axis(lo: float, hi: float, step: float) -> np.ndarray:
+    """
+    Temperature nodes from ``lo`` to ``hi`` inclusive, at most ``step`` apart.
+
+    Evenly spaced; the spacing equals ``step`` when it divides the range
+    (``ceil`` of the interval count otherwise, so never coarser than asked).
+
+    Parameters
+    ----------
+    lo, hi : float
+        Range ends [K], ``lo < hi``.
+    step : float
+        Largest node spacing [K], positive.
+
+    Returns
+    -------
+    np.ndarray
+        Ascending nodes [K], read-only.
+
+    Raises
+    ------
+    ValueError
+        For a non-positive step or an empty range.
+    """
+    if not step > 0 or not hi > lo:
+        raise ValueError(f"temperature axis needs step > 0 and hi > lo, got "
+                         f"step {step}, range {lo}-{hi} K")
+    n = int(np.ceil((hi - lo) / step - 1e-9))
+    return _readonly(np.linspace(lo, hi, n + 1))
+
+
+def atm_temp_nodes(step: float = DEFAULT_ATM_TEMP_STEP) -> np.ndarray:
+    """Temperature axis of the ambient (atmospheric) gas LUTs [K]."""
+    return temp_axis(*ATM_TEMP_RANGE, step)
+
+
+#: The axes at the default spacings (the shipped grids; a run builds its own
+#: from its *MODEL steps).
+ATM_TEMP_NODES:   np.ndarray = atm_temp_nodes()
+PLUME_TEMP_NODES: np.ndarray = temp_axis(*PLUME_TEMP_RANGE, DEFAULT_PLUME_TEMP_STEP)
 
 # Emission and solar geometries: the plume is a thin layer near ambient
 # temperature (an advected plume cools to within a few K of ambient within
@@ -241,19 +297,21 @@ PLUME_TEMP_NODES: np.ndarray = _readonly(np.linspace(300.0, 1000.0, 25))  # hot 
 # query silently clamped it to the 300 K node while the Planck term used the
 # true temperature.  Queries outside an axis now raise (GasLUT.query), so each
 # geometry builds the axis it needs: see plume_temp_nodes_for().
-EMISSION_PLUME_TEMP_NODES: np.ndarray = _readonly(np.arange(220.0, 401.0, 10.0))   # 220-400 K
-                                                                        # (emission + solar)
-_EMISSION_NODE_STEP: float = 10.0
+EMISSION_PLUME_TEMP_RANGE: tuple[float, float] = (220.0, 400.0)   # emission + solar
+EMISSION_PLUME_TEMP_NODES: np.ndarray = temp_axis(*EMISSION_PLUME_TEMP_RANGE,
+                                                  DEFAULT_PLUME_TEMP_STEP)
 
-def plume_temp_nodes_for(geometry, plume_temp: float | None = None) -> np.ndarray:
+
+def plume_temp_nodes_for(geometry, plume_temp: float | None = None,
+                         step: float = DEFAULT_PLUME_TEMP_STEP) -> np.ndarray:
     """
     Temperature axis of the plume gas LUTs for a run's geometry.
 
     The layer geometry (a hot gas in front of a lava source) uses the hot-gas
-    axis, ``PLUME_TEMP_NODES``.  The emission and solar geometries, whose plume
-    is near the ambient temperature at its altitude, use
-    ``EMISSION_PLUME_TEMP_NODES`` (220-400 K), widened in 10 K steps if the run
-    needs more: a fitted plume temperature is bounded about the ambient a
+    range, ``PLUME_TEMP_RANGE`` (300-1000 K).  The emission and solar
+    geometries, whose plume is near the ambient temperature at its altitude,
+    use ``EMISSION_PLUME_TEMP_RANGE`` (220-400 K), widened to multiples of
+    ``step`` if the run needs more: a fitted plume temperature is bounded about the ambient a
     priori, so the axis must contain ``[plume_temp - below, plume_temp +
     above]``, and a fixed one must contain ``plume_temp``.  Because the axis is
     part of the LUT cache key, a widened axis makes the table rebuild; it is
@@ -262,32 +320,34 @@ def plume_temp_nodes_for(geometry, plume_temp: float | None = None) -> np.ndarra
     Parameters
     ----------
     geometry : LayerGeometry, EmissionGeometry or SolarGeometry
-        The run geometry.  The layer geometry is recognised by its
-        ``fit_gas_temp`` field; ``fit_tplume`` (emission only) marks a fitted
-        plume temperature.
+        The run geometry.  For the emission and solar geometries,
+        ``fit_plume_temp`` marks a fitted plume temperature.
     plume_temp : float, optional
         The plume temperature actually used, where the caller has resolved it
         (solar reads it from the profile); defaults to ``geometry.plume_temp``.
+    step : float
+        Largest node spacing [K] (*MODEL ``plume_temp_step``).
 
     Returns
     -------
     np.ndarray
         Ascending temperature nodes [K], shape (n_temp,).
     """
-    if hasattr(geometry, "fit_gas_temp"):            # layer geometry
-        return PLUME_TEMP_NODES
+    from plumeIR.config.objects import LayerGeometry   # config imports standards
+    if isinstance(geometry, LayerGeometry):
+        return temp_axis(*PLUME_TEMP_RANGE, step)
 
+    base_lo, base_hi = EMISSION_PLUME_TEMP_RANGE
     t = plume_temp if plume_temp is not None else getattr(geometry, "plume_temp", None)
-    if t is None:                                    # unresolved: the default axis
-        return EMISSION_PLUME_TEMP_NODES
+    if t is None:                                    # unresolved: the default range
+        return temp_axis(base_lo, base_hi, step)
     lo = hi = float(t)
-    if getattr(geometry, "fit_tplume", False):
+    if getattr(geometry, "fit_plume_temp", False):
         spec = TEMP_DEFAULTS["plume_temp"]
         lo, hi = lo - spec["below"], hi + spec["above"]
-    step = _EMISSION_NODE_STEP
-    lo = min(float(EMISSION_PLUME_TEMP_NODES[0]), step * np.floor(lo / step))
-    hi = max(float(EMISSION_PLUME_TEMP_NODES[-1]), step * np.ceil(hi / step))
-    return np.arange(lo, hi + 0.5 * step, step)
+    lo = min(base_lo, step * np.floor(lo / step))
+    hi = max(base_hi, step * np.ceil(hi / step))
+    return temp_axis(lo, hi, step)
 
 
 # H2O VMR grid [ppmv], log-spaced — the second axis of the 2-D H2O LUT

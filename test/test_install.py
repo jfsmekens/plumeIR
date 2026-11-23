@@ -128,8 +128,8 @@ class TestExamples:
         assert cfg["model"].cache_dir is None          # the default cache
 
     def test_layer_example_is_the_guide_setup(self):
-        # Six windows, polydeg 2 (v2's "3"), temperatures handed on in order,
-        # and the CH4 path check.
+        # Five fit windows and the path window (*PATH, CH4), polydeg 2 (v2's
+        # "3"), temperatures handed on in order.
         from plumeIR.config.builder import build_from_raw
         from plumeIR.config.parser import read_config
         from plumeIR.config.paths import resolve_config_paths
@@ -140,15 +140,17 @@ class TestExamples:
         cfg = build_from_raw(raw, base_dir=path.parent)
         windows = cfg["windows"]
         assert [w.label for w in windows] == ["FIT0", "FIT1", "FIT2", "FIT3",
-                                              "FIT4", "FIT5"]
+                                              "FIT4", "PATH"]
         assert all(w.polydeg == 2 for w in windows)
         assert [w.plume_temp_from for w in windows] == [None] + ["FIT0"] * 5
         # atm_temp held at the measured value; fitted in HCl only as a check.
         assert [w.atm_temp_from for w in windows] == [None] * 6
         assert cfg["geometry"].fit_atm_temp is False
         assert [w.fit_atm_temp for w in windows] == [None, True, None, None, None, None]
-        assert cfg["geometry"].path_tracer == "CH4"
-        assert "CH4" in windows[-1].atm_gases and not windows[-1].targets
+        assert cfg["geometry"].path_tracer is None      # deprecated form unused
+        path_window = windows[-1]
+        assert path_window.is_path and path_window.tracer == "CH4"
+        assert "CH4" in path_window.atm_gases and not path_window.targets
 
     def test_no_machine_paths(self):
         from plumeIR.config.parser import read_config

@@ -10,7 +10,7 @@ The run output folder: one directory per run, written by any client.
                            git commits where known), spectra loaded and
                            fitted, ILS used, convergence and R² per window,
                            final ratio regressions, and with
-                           GEOMETRY.path_tracer the path check, and the
+                           a *PATH window the path check, and the
                            whole-spectrum preprocessing's run-level results
         preprocess.csv  one row per spectrum: the background and
                            registration measured before the fits (when either
@@ -47,7 +47,7 @@ import numpy as np
 
 from plumeIR import __version__
 from plumeIR.config.parser import read_config, write_config
-from plumeIR.constants import POSSIBLE_AEROSOLS
+from plumeIR.constants import LEGACY_PARAMETER_NAMES, POSSIBLE_AEROSOLS
 from plumeIR.exceptions import ConfigError, RunFolderError
 from plumeIR.path_tracer import PathReport
 from plumeIR.provenance import package_versions
@@ -165,7 +165,7 @@ def write_results(table: ResultsTable, run_dir: Path,
     run_dir : Path
         The run folder.
     tracer : PathReport or None
-        The path diagnostic (``GEOMETRY.path_tracer``); its per-spectrum
+        The path diagnostic (the ``*PATH`` window); its per-spectrum
         implied path is added to the wide table as ``tracer_path_km``.
 
     Returns
@@ -359,7 +359,9 @@ def _tracer_lines(tracer: PathReport, ratios: dict | None) -> list[str]:
              f"configured pathlength {tracer.configured_km:.4g} km "
              f"(diagnostic only: no fit uses it)"]
     if tracer.best is None:
-        return lines + [f"                no window has {tracer.tracer} fitted in "
+        where = (f"the {tracer.path_window} window has" if tracer.designated
+                 else "no window has")
+        return lines + [f"                {where} {tracer.tracer} fitted in "
                         "enough spectra"]
     rows = []
     for label, w in tracer.windows.items():
@@ -371,8 +373,9 @@ def _tracer_lines(tracer: PathReport, ratios: dict | None) -> list[str]:
                      f"{100 * w.rel_error:.1f}%", talk])
     lines += _table(["window", "n", "path [km]", "p5-p95", "fit error",
                      "r plume gas"], rows)
-    lines += [f"implied path    {tracer.path_km:.3f} km ({tracer.best}, smallest "
-              f"fit error), {tracer.ratio:.2f}× the configured path"]
+    why = "the path window" if tracer.designated else "smallest fit error"
+    lines += [f"implied path    {tracer.path_km:.3f} km ({tracer.best}, {why}), "
+              f"{tracer.ratio:.2f}× the configured path"]
     rows = [[a.window, a.gas, f"{a.configured_ppmv:.4g}", f"{a.implied_ppmv:.4g}"]
             for a in tracer.ambient]
     lines += [""] + _table(["window", "ambient gas", "VMR at pathlength",
@@ -678,7 +681,9 @@ class FitArchive:
         key = f"{window}.covariance"
         if key not in self._a:
             raise KeyError(f"{window}: no covariances stored (fits.npz format 1)")
-        names = [str(v) for v in self._a[f"{window}.varied"]]
+        # A run folder written before 2026-11-19 stores former parameter names.
+        names = [LEGACY_PARAMETER_NAMES.get(str(v), str(v))
+                 for v in self._a[f"{window}.varied"]]
         for name in (a, b):
             if name not in names:
                 raise KeyError(f"{window}: {name!r} is not a varied parameter "

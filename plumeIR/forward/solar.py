@@ -36,7 +36,7 @@ from plumeIR.forward.base import (
     build_background_poly,
     gas_optical_depth,
 )
-from plumeIR.forward.ils import ILSKernel, kernel_trim_fov, make_ils
+from plumeIR.forward.ils import ILSKernel, broad_kernel_args, kernel_trim_fov, make_ils
 from plumeIR.config.objects import FitWindowConfig, Retrieval, SolarGeometry
 from plumeIR.parameters.parameter import ParameterKind, ParameterSet
 from plumeIR.reference.reference import Reference
@@ -177,6 +177,7 @@ class SolarForwardModel(ForwardModel):
             apod_type=self.retrieval.apod_type,
             trim_opd=self.retrieval.max_opd,   # fixed length while max_opd varies
             trim_fov=kernel_trim_fov(self.params["fov"]),   # fixed length while fov varies
+            **broad_kernel_args(p, self.params, self.retrieval),
         )
 
     # ------------------------------------------------------------------
@@ -189,5 +190,5 @@ class SolarForwardModel(ForwardModel):
         F = apply_ils(F, self._make_kernel(p))
         return apply_shift_offset(
             F, self.ref.wn, self.wn_meas,
-            shift=p.get("nu_shift", 0.0), offset=p.get("offset", 0.0),
+            shift=p.get("shift", 0.0), offset=p.get("offset", 0.0),
         )

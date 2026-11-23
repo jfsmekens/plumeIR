@@ -1,5 +1,6 @@
 """
-Tests for the path-length diagnostic (``GEOMETRY.path_tracer``).
+Tests for the path-length diagnostic (the ``*PATH`` window, and the
+deprecated ``GEOMETRY.path_tracer``).
 
 Validated first on the layer validation set (2026-11-15): CH4 in a 2880-2990 cm⁻¹ window implies a 2.003 km
 path (2.0% per spectrum) against the configured 1.22 km, N2O 2.01 km, and
@@ -142,6 +143,49 @@ class TestTracerReport:
         assert "Path check" not in caplog.text
 
 
+def _with_path_window(noisy: bool = False):
+    """``_setup``'s windows with W1 renamed PATH and marked as the path window."""
+    table, windows, params = _setup()
+    df = table.df.copy()
+    df.loc[df.window == "W1", "window"] = "PATH"
+    if noisy:
+        # Too few successful fits in PATH: no implied path, and no fallback.
+        df.loc[df.window == "PATH", "success"] = False
+    windows = {"PATH": SimpleNamespace(atm_gases=("CH4",), is_path=True,
+                                       tracer="CH4", label="PATH"),
+               "W5": windows["W5"]}
+    params = {"PATH": params["W1"], "W5": params["W5"]}
+    return ResultsTable(df), windows, params
+
+
+class TestPathWindow:
+    """The *PATH window names the tracer and gives the path (2026-11-18)."""
+
+    def test_path_window_gives_the_path_even_when_noisier(self):
+        table, windows, params = _with_path_window()
+        rep = tracer_report(table, windows, params, _geometry(None))
+        assert rep.tracer == "CH4" and rep.designated
+        assert rep.best == "PATH"                       # not W5, the smaller error
+        assert rep.windows["W5"].rel_error < rep.windows["PATH"].rel_error
+        assert rep.path_km == pytest.approx(L_TRUE, rel=0.05)
+
+    def test_no_fallback_when_the_path_window_has_too_few_fits(self, caplog):
+        table, windows, params = _with_path_window(noisy=True)
+        with caplog.at_level(logging.WARNING, logger="plumeIR.path_tracer"):
+            rep = tracer_report(table, windows, params, _geometry(None))
+        assert rep.best is None and np.isnan(rep.path_km)
+        assert "W5" in rep.windows                      # still reported
+        assert "no implied path" in caplog.text
+
+    def test_summary_names_the_path_window(self):
+        from plumeIR.output import _tracer_lines
+        table, windows, params = _with_path_window()
+        text = "\n".join(_tracer_lines(tracer_report(table, windows, params,
+                                                      _geometry(None)), None))
+        assert "(PATH, the path window)" in text
+        assert "PATH *" in text and "W5" in text
+
+
 class TestSummaryAndWideTable:
 
     def test_summary_block(self):
@@ -242,6 +286,112 @@ class TestConfigRules:
     def test_tracer_may_not_be_a_target(self, tmp_path):
         with pytest.raises(ConfigError, match="is a target"):
             _build(tmp_path, fit5_targets="HCl, CH4")
+
+
+_PATH_LAYER = """
+*DATA
+data_dir    : {data_dir}
+filter_ext  : spc
+*GEOMETRY
+type        : layer
+pathlength  : 1.22
+atm_temp    : 284
+atm_pres    : 973
+plume_temp  : 450
+plume_pres  : 973
+{geom}
+*FIT0
+fit         : True
+fit_window  : 2450, 2550
+atm_gases   : H2O, N2O
+plume_gases : {fit0_plume}
+targets     : SO2
+{fit0_extra}
+*PATH
+fit         : True
+fit_window  : 2880, 2990
+atm_gases   : {path_atm}
+plume_gases : HCl
+tracer      : {tracer}
+{path_extra}
+"""
+
+
+def _build_path(tmp_path: Path, geom="", fit0_plume="SO2", fit0_extra="",
+                path_atm="CH4, H2O, N2O", tracer="CH4", path_extra=""):
+    from plumeIR.config.builder import build_from_raw
+    from plumeIR.config.parser import read_config
+    path = tmp_path / "run.ini"
+    path.write_text(_PATH_LAYER.format(
+        data_dir=tmp_path, geom=geom, fit0_plume=fit0_plume, fit0_extra=fit0_extra,
+        path_atm=path_atm, tracer=tracer, path_extra=path_extra), encoding="utf-8")
+    return build_from_raw(read_config(path), base_dir=tmp_path)
+
+
+class TestPathSection:
+    """``*PATH``: a fit window labelled PATH, with a tracer and no targets."""
+
+    def test_builds_as_a_window(self, tmp_path):
+        cfg = _build_path(tmp_path)
+        w = {w.label: w for w in cfg["windows"]}
+        assert list(w) == ["FIT0", "PATH"]
+        assert w["PATH"].is_path and w["PATH"].tracer == "CH4"
+        assert not w["FIT0"].is_path and w["FIT0"].tracer is None
+        assert w["PATH"].targets == ()
+        assert cfg["geometry"].path_tracer is None
+
+    def test_written_config_reads_back(self, tmp_path):
+        from plumeIR.config.parser import read_config, write_config
+        _build_path(tmp_path)
+        raw = read_config(tmp_path / "run.ini")
+        write_config(raw, tmp_path / "copy.ini")
+        again = read_config(tmp_path / "copy.ini")
+        assert [f["_label"] for f in again["fits"]] == ["FIT0", "PATH"]
+        assert again["fits"][1]["tracer"] == "CH4"
+
+    def test_tracer_required(self, tmp_path):
+        with pytest.raises(ConfigError, match="PATH.tracer: required"):
+            _build_path(tmp_path, tracer="None")
+
+    def test_tracer_only_in_path(self, tmp_path):
+        with pytest.raises(ConfigError, match="only the \\*PATH window takes a tracer"):
+            _build_path(tmp_path, fit0_extra="tracer : CH4")
+
+    def test_no_targets(self, tmp_path):
+        with pytest.raises(ConfigError, match="the path window has no targets"):
+            _build_path(tmp_path, path_extra="targets : HCl")
+
+    def test_tracer_is_an_atm_gas_of_path(self, tmp_path):
+        with pytest.raises(ConfigError, match="must be one of the window's atm_gases"):
+            _build_path(tmp_path, path_atm="H2O, N2O")
+
+    def test_tracer_not_a_plume_gas_elsewhere(self, tmp_path):
+        with pytest.raises(ConfigError, match="is a plume gas"):
+            _build_path(tmp_path, fit0_plume="SO2, CH4")
+
+    def test_unknown_tracer_rejected(self, tmp_path):
+        with pytest.raises(ConfigError, match="tracer"):
+            _build_path(tmp_path, tracer="CO2")
+
+    def test_one_path_section(self, tmp_path):
+        extra = ("*PATH\nfit : True\nfit_window : 2540, 2600\n"
+                 "atm_gases : N2O\ntracer : N2O")
+        with pytest.raises(ConfigError, match="2 \\*PATH sections"):
+            _build_path(tmp_path, path_extra=extra)
+
+    def test_legacy_key_agreeing_is_redundant(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger="plumeIR.config.validator"):
+            _build_path(tmp_path, geom="path_tracer : CH4")
+        assert "deprecated and redundant" in caplog.text
+
+    def test_legacy_key_disagreeing_rejected(self, tmp_path):
+        with pytest.raises(ConfigError, match="disagree"):
+            _build_path(tmp_path, geom="path_tracer : N2O")
+
+    def test_legacy_key_alone_warns(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger="plumeIR.config.validator"):
+            _build(tmp_path)
+        assert "GEOMETRY.path_tracer is deprecated" in caplog.text
 
 
 def test_scd_to_vmr_is_inverse_in_path():

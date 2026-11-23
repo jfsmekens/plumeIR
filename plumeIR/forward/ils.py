@@ -20,7 +20,7 @@ kernel a *staircase* in its own parameters:
    so the width only changed when ``fov`` moved by ~1e-3 (for a 2760 cm⁻¹
    window), while ``scipy.optimize.least_squares`` probes with a step of
    ~7e-10.  The width contributed *exactly zero* to the Jacobian; only the
-   FOV-induced shift did, and that is collinear with ``nu_shift`` — measured at
+   FOV-induced shift did, and that is collinear with ``shift`` — measured at
    R = 0.95-0.97 on real data.  ``fov`` was in effect a redundant shift
    parameter, and its per-spectrum wander degraded retrieved gas ratios by a
    factor of ~2.5.  The sinc form is exact rather than discretized, smooth at
@@ -38,8 +38,8 @@ kernel a *staircase* in its own parameters:
    a manual roll by ``n_tot // 2`` against a ``linspace`` grid whose zero sits
    at ``(n_tot - 1) / 2``, leaving the kernel off-centre by half a sample for
    even ``n_tot`` and a full sample for odd — and ``n_tot = nper_wn**2`` is odd
-   exactly when ``nper_wn`` is.  A free ``nu_shift`` absorbed it, so gas columns
-   were largely protected, but ``nu_shift`` was measuring the model grid rather
+   exactly when ``nper_wn`` is.  A free ``shift`` absorbed it, so gas columns
+   were largely protected, but ``shift`` was measuring the model grid rather
    than the instrument, and the odd-``nper_wn`` case cost real fits: at
    ``nper_wn = 25`` four of fifty emission spectra failed with ``fov`` pinned at
    its lower bound, against none at 10 or 40.  Both halves of the pair are now
@@ -54,7 +54,7 @@ OPD only, never on ``fov``, so a held and a fitted ``fov`` see the same core.
 **The FOV only broadens (convention A, 2026-11-16).**  A finite FOV both
 broadens lines and displaces them by ``ν·fov²/16``; the kernel models the
 broadening only and is centred on zero.  The displacement is a shift like any
-other and goes to the wavenumber registration and ``nu_shift``, so ``fov``
+other and goes to the wavenumber registration and ``shift``, so ``fov``
 measures line width alone.
 """
 
@@ -222,6 +222,41 @@ def core_support(apod_type: str, trim_opd: float, nper_wn: float,
             _TAIL_MASS_TOL)
         return float(s_max)
     return float(max(s_min, s_grid[ok[0]]))
+
+
+def broad_kernel_args(p: dict, params, retrieval) -> dict:
+    """
+    :func:`make_ils` arguments for the broad line-shape component.
+
+    Fitted values come from ``p``; held ones from ``retrieval``.  While the
+    width is fitted, the kernel's length is fixed by its upper bound (as
+    :func:`kernel_trim_fov` does for ``fov``); while only the fraction is
+    fitted, by the held width.  With the fraction held at 0 and nothing
+    fitted, the component is off and the kernel unchanged.
+
+    Parameters
+    ----------
+    p : dict
+        Current parameter values by name.
+    params : ParameterSet
+        The window's parameters (to tell fitted from held).
+    retrieval : Retrieval
+        Run settings: ``broad_frac``, ``broad_width``.
+
+    Returns
+    -------
+    dict
+        ``broad_frac``, ``broad_width``, ``trim_broad_width``.
+    """
+    # getattr: a retrieval without the fields (a stand-in) means "off".
+    frac = float(p.get("broad_frac", getattr(retrieval, "broad_frac", 0.0)))
+    width = float(p.get("broad_width", getattr(retrieval, "broad_width", 0.0)))
+    trim = None
+    if "broad_width" in params and params["broad_width"].vary:
+        trim = float(params["broad_width"].bounds[1])
+    elif "broad_frac" in params and params["broad_frac"].vary:
+        trim = width
+    return dict(broad_frac=frac, broad_width=width, trim_broad_width=trim)
 
 
 def kernel_trim_fov(fov_param) -> float | None:
@@ -431,6 +466,9 @@ def make_ils(
     fwhm_wn:   float | None = None,
     trim_opd:  float | None = None,
     trim_fov:  float | None = None,
+    broad_frac:  float = 0.0,
+    broad_width: float = 0.0,
+    trim_broad_width: float | None = None,
 ) -> ILSKernel:
     """
     Compute an FT-IR instrument line shape kernel.
@@ -439,7 +477,7 @@ def make_ils(
     numerically during a fit — see the module docstring for why that matters.
     The FOV only broadens the line (convention A): its displacement of line
     centres, ``ν·fov²/16``, is not in the kernel and is carried by the
-    wavenumber registration and ``nu_shift``.
+    wavenumber registration and ``shift``.
 
     Parameters
     ----------
@@ -471,6 +509,22 @@ def make_ils(
         broadened ringing.  ``None`` uses ``fov``.  Pass the fitted ``fov``'s upper bound
         when fitting (:func:`kernel_trim_fov`), so the length stays fixed.  A
         live ``fov`` above ``trim_fov`` widens the support to fit it.
+    broad_frac : float
+        Fraction of the line shape in a second, broader component (0 to 1;
+        2026-11-23).  The kernel becomes ``(1 - f)·k + f·(k ⊛ G_σ)``, ``G_σ`` a
+        normalised Gaussian of standard deviation ``broad_width``: exactly the
+        factor ``(1 - f) + f·exp(-2π²σ²x²)`` on the interferogram (x the OPD),
+        smooth in both parameters.  0 (the default) leaves the kernel
+        bit-identical.  For an instrument whose line shape a uniform FOV box
+        cannot describe (scattering optics; CHANGELOG, "Optional broad
+        line-shape component").
+    broad_width : float
+        Standard deviation σ [cm⁻¹] of the broad component.
+    trim_broad_width : float or None
+        σ [cm⁻¹] whose 5σ is added to the kernel's half-width while the broad
+        component is on, so it holds the Gaussian.  ``None`` uses
+        ``broad_width``.  Pass the fitted width's upper bound when fitting, so
+        the length stays fixed (as for ``trim_fov``).
 
     Returns
     -------
@@ -490,6 +544,10 @@ def make_ils(
         raise PlumeIRError(f"wn_center must be positive, got {wn_center}")
     if fov < 0:
         raise PlumeIRError(f"fov must be non-negative, got {fov}")
+    if not 0.0 <= broad_frac <= 1.0:
+        raise PlumeIRError(f"broad_frac must be within [0, 1], got {broad_frac}")
+    if broad_width < 0:
+        raise PlumeIRError(f"broad_width must be non-negative, got {broad_width}")
 
     # ------------------------------------------------------------------
     # Kernel support: the line shape's converged core (core_support, at least
@@ -505,6 +563,13 @@ def make_ils(
     box_fov = fov if trim_fov is None else max(float(trim_fov), fov)
     box_width = wn_center * (box_fov / 2.0) ** 2 / 2.0   # [cm⁻¹]
     support = core_support(apod_type, trim, float(nper_wn), fwhm_wn) + box_width
+    # The broad component (when on, or when its trim is given because it is
+    # fitted) needs 5σ more, at the width's trim so the length stays fixed.
+    broad_on = broad_frac > 0.0 or trim_broad_width is not None
+    if broad_on:
+        sigma_trim = (float(trim_broad_width) if trim_broad_width is not None
+                      else broad_width)
+        support += 5.0 * max(sigma_trim, broad_width)
 
     # ------------------------------------------------------------------
     # Fixed OPD grid — independent of max_opd, so nothing about the
@@ -539,6 +604,16 @@ def make_ils(
     apod = apod * np.sinc(fov_width * opd)
 
     # ------------------------------------------------------------------
+    # Broad component (2026-11-23): convolving a fraction f of the line shape
+    # with a Gaussian of standard deviation σ is multiplication by
+    # (1 - f) + f·exp(-2π²σ²x²) here.  Equal to 1 at x = 0, so the pedestal
+    # a0 and the kernel's mass are unchanged.
+    # ------------------------------------------------------------------
+    if broad_on:
+        apod = apod * ((1.0 - broad_frac)
+                       + broad_frac * np.exp(-2.0 * np.pi ** 2 * broad_width ** 2 * opd ** 2))
+
+    # ------------------------------------------------------------------
     # OPD -> wavenumber.
     # ------------------------------------------------------------------
     # fftshift BOTH halves of the transform pair, so the kernel's DC component
@@ -565,11 +640,11 @@ def make_ils(
         )
     # Convention A (2026-11-16): the FOV only BROADENS here.  A finite FOV also displaces line
     # centres by half the box width, ν·fov²/16, to lower wavenumber; that
-    # displacement is left to the wavenumber registration and ``nu_shift``,
+    # displacement is left to the wavenumber registration and ``shift``,
     # which absorb any shift.  With the shift in the kernel, ``fov`` carried
-    # width and position at once, so a window's ``fov`` and ``nu_shift`` were
+    # width and position at once, so a window's ``fov`` and ``shift`` were
     # partly collinear and the run's wavenumber scale ε was hidden inside
-    # ``fov`` (measured: the displacement nu_shift − ν·fov²/16 is ε·ν across
+    # ``fov`` (measured: the displacement shift − ν·fov²/16 is ε·ν across
     # seven layer windows).  The kernel was shifted exactly, by a phase factor
     # on the interferogram, from 2026-11-14 (ILS decision 10) until this.
     kernel  = np.fft.fftshift(np.fft.fft(apod).real) - 0.5 * a0

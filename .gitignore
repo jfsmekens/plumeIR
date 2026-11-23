@@ -26,10 +26,12 @@ env/
 # =============================================================================
 
 # Debug and test outputs — never committed.  Top-level debug/*.py are the
-# validation and diagnostic scripts (moved from test/ in M5) and stay tracked;
-# everything else under debug/ (baselines, logs, scratch) is local.
+# validation and diagnostic scripts (moved from test/ in M5) and stay tracked,
+# as do the validation configs in debug/configs/ (2026-11-18); everything
+# else under debug/ (baselines, logs, scratch) is local.
 debug/*
 !debug/*.py
+!debug/configs/
 test/debug/
 test/demo_output/
 

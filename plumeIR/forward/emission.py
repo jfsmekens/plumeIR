@@ -50,7 +50,7 @@ from plumeIR.forward.base import (
     build_background_poly,
     gas_optical_depth,
 )
-from plumeIR.forward.ils import ILSKernel, kernel_trim_fov, make_ils
+from plumeIR.forward.ils import ILSKernel, broad_kernel_args, kernel_trim_fov, make_ils
 from plumeIR.config.objects import EmissionGeometry, FitWindowConfig, Retrieval
 from plumeIR.parameters.parameter import ParameterKind, ParameterSet
 from plumeIR.physics import bbt, rad
@@ -137,13 +137,13 @@ class EmissionForwardModel(ForwardModel):
         OD_ext = np.zeros(n)
         OD_abs = np.zeros(n)
 
-        # Plume gases at the plume temperature — fitted when fit_tplume is
+        # Plume gases at the plume temperature — fitted when fit_plume_temp is
         # set, otherwise the ambient a priori from the profile.  The SAME
         # temperature drives the Planck self-emission term in model_highres:
         # Kirchhoff, for a single near-isothermal layer.
-        gas_temp = p.get("plume_temp", self._plume_temp)
+        plume_temp = p.get("plume_temp", self._plume_temp)
         for species in self.window.plume_gases:
-            od = gas_optical_depth(self.ref.gas_luts[species], p[species], gas_temp)
+            od = gas_optical_depth(self.ref.gas_luts[species], p[species], plume_temp)
             OD_ext = OD_ext + od
             OD_abs = OD_abs + od
 
@@ -330,6 +330,7 @@ class EmissionForwardModel(ForwardModel):
             apod_type=self.retrieval.apod_type,
             trim_opd=self.retrieval.max_opd,   # fixed length while max_opd varies
             trim_fov=kernel_trim_fov(self.params["fov"]),   # fixed length while fov varies
+            **broad_kernel_args(p, self.params, self.retrieval),
         )
 
     # ------------------------------------------------------------------
@@ -342,7 +343,7 @@ class EmissionForwardModel(ForwardModel):
         F = apply_ils(F, self._make_kernel(p))
         return apply_shift_offset(
             F, self.ref.wn, self.wn_meas,
-            shift=p.get("nu_shift", 0.0), offset=p.get("offset", 0.0),
+            shift=p.get("shift", 0.0), offset=p.get("offset", 0.0),
         )
 
     def continuum(self, p_vec: np.ndarray) -> np.ndarray:
@@ -362,5 +363,5 @@ class EmissionForwardModel(ForwardModel):
         F = apply_ils(F, self._make_kernel(p))
         return apply_shift_offset(
             F, self.ref.wn, self.wn_meas,
-            shift=p.get("nu_shift", 0.0), offset=p.get("offset", 0.0),
+            shift=p.get("shift", 0.0), offset=p.get("offset", 0.0),
         )

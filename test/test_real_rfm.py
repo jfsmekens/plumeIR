@@ -616,7 +616,7 @@ def test_h_run_from_config_end_to_end(tmp_path):
     assert np.all(np.isfinite(so2.values)) and np.all(so2.values > 0)
 
     # Gas temperature was fitted in FIT0, within the LUT node range.
-    gt = df[df["parameter"] == "gas_temp"]
+    gt = df[df["parameter"] == "plume_temp"]
     assert len(gt) >= 1
     assert gt["varied"].all()
     assert gt["value"].between(300.0, 1000.0).all()

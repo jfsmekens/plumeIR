@@ -12,7 +12,8 @@ File format
 - Inline comments must be preceded by whitespace: ``# comment`` not ``#comment``,
   so paths like ``/data/#2024/`` are parsed correctly.
 - ``*FIT0``, ``*FIT1``, … sections are collected as an ordered list under
-  the key ``'fits'``.
+  the key ``'fits'``; so is ``*PATH`` (the path window, layer), in file
+  order, with the window keys and its ``tracer``.
 - ``*DEFAULTS`` entries use ``SPECIES_field`` keys (e.g. ``SO2_conc``).
 
 Values are converted by the type the key catalogue declares
@@ -35,10 +36,12 @@ import re
 from pathlib import Path
 
 from plumeIR.config.keys import (
-    AEROSOL, DEFAULTS_FIELDS, GAS, PATTERNS, SECTION_HELP, Key, defaults_field, lookup,
-    split_species_field,
+    AEROSOL, DEFAULTS_FIELDS, GAS, PATH_SECTION, Key,
+    defaults_field, lookup, split_species_field,
 )
-from plumeIR.constants import LEGACY_AEROSOL_NAMES, POSSIBLE_GASES
+from plumeIR.constants import (
+    LEGACY_AEROSOL_NAMES, LEGACY_PARAMETER_NAMES, POSSIBLE_GASES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +56,23 @@ MOVED_KEYS: dict[tuple[str, str], str] = {
     ("GEOMETRY", "self_file"):     "PREPROCESS",    # 2026-11-15
 }
 
+#: Keys renamed in place (2026-11-19, developer; ``docs/WINDOW_CONTROLS.md``
+#: section 6): every fit flag is ``fit_`` plus the parameter it controls, and
+#: plume quantities are named ``plume...``.  Old names are read, with a
+#: warning, by :func:`migrate_renamed_keys`, in whichever section they stand.
+#: ``fit_gas_temp`` (layer) and ``fit_tplume`` (emission) become one key.
+RENAMED_KEYS: dict[str, str] = {
+    "fit_gas_temp":         "fit_plume_temp",
+    "fit_tplume":           "fit_plume_temp",
+    "fit_tprox":            "fit_dt_prox",
+    "fit_tdist":            "fit_dt_dist",
+    "fit_size_aero":        "fit_r0",
+    "fit_aero_composition": "fit_wt",
+    "model_gas_emission":   "model_plume_emission",
+    "nu_shift":             "shift",
+}
+
 # Column at which inline comments start in the written file
-_COMMENT_COL = 48
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +211,82 @@ def migrate_moved_keys(raw: dict) -> dict:
     return out
 
 
+def _rename_keys(section: dict, where: str, renamed: set[str]) -> dict:
+    """One section with :data:`RENAMED_KEYS` applied (a copy); the new name wins."""
+    out: dict = {}
+    for key, value in section.items():
+        new = RENAMED_KEYS.get(key)
+        if new is None:
+            if key.startswith("sigma_prior_"):
+                param = key[len("sigma_prior_"):]
+                new_param = LEGACY_PARAMETER_NAMES.get(param)
+                if new_param is not None:
+                    new = "sigma_prior_" + new_param
+        if new is None:
+            if key not in out:
+                out[key] = value
+            continue
+        if new in section:
+            logger.warning("%s.%s is also set as %s; the %s value is used and the "
+                           "%s one ignored", where, key, new, new, key)
+            continue
+        renamed.add(f"{key} → {new}")
+        out[new] = value
+    return out
+
+
+def migrate_renamed_keys(raw: dict) -> dict:
+    """
+    Read keys and parameter names renamed on 2026-11-19 under their new names.
+
+    Keys in :data:`RENAMED_KEYS` are renamed in every section and window, as
+    are ``sigma_prior_<param>`` keys and the window ``targets`` that name a
+    parameter in :data:`~plumeIR.constants.LEGACY_PARAMETER_NAMES`
+    (``gas_temp`` is ``plume_temp`` now).  One warning lists every rename.
+    Where a key is set under both names the new one is used, with a warning.
+
+    Parameters
+    ----------
+    raw : dict
+        A raw config dict (:func:`read_config` output, or a client's).
+
+    Returns
+    -------
+    dict
+        A copy with the new names; the input is not modified.
+    """
+    out = dict(raw)
+    renamed: set[str] = set()
+    for name in _NAMED_SECTIONS:
+        if isinstance(raw.get(name), dict):
+            out[name] = _rename_keys(raw[name], name, renamed)
+    if isinstance(raw.get("fits"), list):
+        fits = []
+        for f in raw["fits"]:
+            if not isinstance(f, dict):
+                fits.append(f)
+                continue
+            f = _rename_keys(f, f.get("_label", "FIT"), renamed)
+            targets = f.get("targets")
+            if isinstance(targets, (list, tuple)):
+                new = [LEGACY_PARAMETER_NAMES.get(t, t) if isinstance(t, str) else t
+                       for t in targets]
+                for old, n in zip(targets, new):
+                    if old != n:
+                        renamed.add(f"target {old} → {n}")
+                f["targets"] = new
+            elif isinstance(targets, str) and targets in LEGACY_PARAMETER_NAMES:
+                renamed.add(f"target {targets} → {LEGACY_PARAMETER_NAMES[targets]}")
+                f["targets"] = LEGACY_PARAMETER_NAMES[targets]
+            fits.append(f)
+        out["fits"] = fits
+    if renamed:
+        logger.warning("Former names renamed (2026-11-19: fit flags are fit_<parameter>, "
+                       "plume quantities plume..., nu_shift is shift): %s. Update the "
+                       "config file.", ", ".join(sorted(renamed)))
+    return out
+
+
 def _legacy(name: str, aerosols_here: set[str]) -> str | None:
     """
     The current name of a former aerosol name, or ``None``.
@@ -263,7 +357,7 @@ def migrate_species_names(raw: dict) -> dict:
         here = {a.upper() for a in (f.get("plume_aero") or []) if isinstance(a, str)}
         if "plume_aero" in f:
             f["plume_aero"] = rename_list(f["plume_aero"])
-        for key in ("fit_size_aero", "fit_aero_composition"):   # lists of aerosols
+        for key in ("fit_r0", "fit_wt"):   # lists of aerosols
             if isinstance(f.get(key), (list, tuple, str)) and not isinstance(f[key], bool):
                 f[key] = rename_list(f[key])
         if "targets" in f and isinstance(f["targets"], (list, tuple)):
@@ -292,7 +386,7 @@ def migrate_species_names(raw: dict) -> dict:
     if isinstance(raw.get("RETRIEVAL"), dict):
         section = {}
         for key, value in raw["RETRIEVAL"].items():
-            if key in ("fit_size_aero", "fit_aero_composition") and \
+            if key in ("fit_r0", "fit_wt") and \
                     isinstance(value, (list, tuple, str)) and not isinstance(value, bool):
                 value = rename_list(value)
             new_key = key
@@ -342,7 +436,7 @@ def normalise(raw: dict) -> dict:
     dict
         A converted copy (sections copied, values shared).
     """
-    raw = migrate_species_names(migrate_moved_keys(raw))
+    raw = migrate_species_names(migrate_moved_keys(migrate_renamed_keys(raw)))
     out = dict(raw)
     for section in _NAMED_SECTIONS:
         if isinstance(raw.get(section), dict):
@@ -381,7 +475,8 @@ def read_config(path: str | Path) -> dict:
     -------
     dict with keys:
         ``'DATA'``, ``'MODEL'``, ``'GEOMETRY'``, ``'RETRIEVAL'``,
-        ``'DEFAULTS'``, ``'fits'`` (list of dicts, one per ``*FITn``), and
+        ``'DEFAULTS'``, ``'fits'`` (list of dicts, one per ``*FITn`` or
+        ``*PATH``), and
         ``'PLOT'`` only when the file has that (optional) section.
         Each section dict maps lower-case key names to parsed values.
 
@@ -417,7 +512,7 @@ def read_config(path: str | Path) -> dict:
                 section_name = line.split()[0][1:].upper()
                 if section_name in _NAMED_SECTIONS:
                     current_section = result.setdefault(section_name, {})
-                elif section_name.startswith("FIT"):
+                elif section_name.startswith("FIT") or section_name == PATH_SECTION:
                     new_fit: dict = {"_label": section_name}
                     result["fits"].append(new_fit)
                     current_section = new_fit
@@ -446,37 +541,43 @@ def read_config(path: str | Path) -> dict:
 
             key, _, raw_value = line.partition(":")
             key = key.strip().lower()
-            spec_section = "FIT" if current_name.startswith("FIT") else current_name
-            current_section[key] = _parse_value(spec_section, key, raw_value)
+            spec_section = ("FIT" if current_name.startswith("FIT")
+                            or current_name == PATH_SECTION else current_name)
+            # A renamed key is parsed by its new key's type and keeps its old
+            # name until migrate_renamed_keys warns about it.
+            current_section[key] = _parse_value(spec_section,
+                                                RENAMED_KEYS.get(key, key), raw_value)
 
     n_fits = len(result["fits"])
     logger.debug("Parsed '%s': %d fit window(s)", path.name, n_fits)
-    return migrate_species_names(migrate_moved_keys(result))
+    return migrate_species_names(migrate_moved_keys(migrate_renamed_keys(result)))
 
 
-def section_comment(section: str) -> list[str]:
-    """
-    The comment lines written above a section header (``'FIT'`` for windows).
+#: Width of the key column in a written config: the longest catalogued key
+#: name is 20 characters.
+_KEY_WIDTH = 20
 
-    The section's help from the catalogue, plus how to write the name-pattern
-    keys the section takes.
-    """
-    lines = [SECTION_HELP[section]]
-    if section == "DEFAULTS":
-        for kind, label in (("gas", "Gas fields    "), ("aerosol", "Aerosol fields")):
-            fields = ", ".join(f"{k.name} [{k.unit}]" if k.unit else k.name
-                               for k in DEFAULTS_FIELDS[kind].values())
-            lines.append(f"  {label}: {fields}")
-        lines.append("  Format        : SPECIES_field : value   (e.g. SO2_conc : 5.0)")
-    for pattern in PATTERNS.values():
-        if pattern.key.section == section:
-            lines.append(f"  {pattern.key.name} : {pattern.key.comment()}")
-    return lines
+#: First line of a written config.
+CONFIG_HEADER = "# plumeIR config; every key is described in docs/CONFIG_REFERENCE.md"
+
+#: Section order of a written config (the windows follow, in their order).
+_WRITE_ORDER: tuple[str, ...] = ("DATA", "MODEL", "GEOMETRY", "PREPROCESS",
+                                 "RETRIEVAL", "DEFAULTS", "PLOT")
 
 
 def write_config(config: dict, path: str | Path) -> None:
     """
-    Write a config dict back to a commented plumeIR ``.ini`` file.
+    Write a config dict as a plumeIR ``.ini`` file: values only.
+
+    One header line points to the key reference (no version: a config
+    outlives releases, and a run's ``summary.txt`` records versions); then
+    each section with ``key : value`` lines aligned on the colon, the fit
+    windows (``*FITn``, ``*PATH``) last, in their order.  Nothing describes
+    the keys: their help lives in the key catalogue
+    (:mod:`plumeIR.config.keys`) and the reference generated from it,
+    ``docs/CONFIG_REFERENCE.md`` (developer, 2026-11-18; the file carried
+    each key's help as a comment until then).  :func:`read_config` reads the
+    file back to the same dict.
 
     Parameters
     ----------
@@ -490,61 +591,22 @@ def write_config(config: dict, path: str | Path) -> None:
     def _fmt(value: object) -> str:
         if value is None:
             return "None"
-        if isinstance(value, bool):
-            return str(value)
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return ", ".join(_fmt(v) for v in value)
         return str(value)
 
-    def _kv_line(section: str, key: str, value: object) -> str:
-        """Format a key-value line with an aligned inline comment."""
-        val_str = _fmt(value)
-        base = f"{key:<20s} : {val_str}"
-        spec = key_spec(section, key)
-        if spec is not None and spec.help:
-            pad = max(1, _COMMENT_COL - len(base))
-            return f"{base}{' ' * pad}# {spec.comment()}"
-        return base
+    def _section(name: str, items: dict) -> list[str]:
+        lines = ["", f"*{name}"]
+        lines += [f"{key:<{_KEY_WIDTH}s} : {_fmt(value)}".rstrip()
+                  for key, value in items.items() if not key.startswith("_")]
+        return lines
 
-    def _section_header(name: str) -> list[str]:
-        """Return the section header lines including a description comment."""
-        return [f"# {line}" for line in section_comment(name)] + [f"*{name}"]
-
-    output: list[str] = []
-
-    # File banner
-    banner_width = 100
-    output.append("#" * banner_width)
-    output.append(f"#{'plumeIR v3 — Configuration File':^{banner_width - 2}}#")
-    output.append(f"#{'Variable name':^20s}{'':2s}{'Value':^20s}{'Description':^{banner_width - 44}}#")
-    output.append("#" * banner_width)
-    output.append("")
-
-    section_order = ["DATA", "MODEL", "GEOMETRY", "PREPROCESS", "RETRIEVAL", "DEFAULTS",
-                     "PLOT"]
-
-    for section in section_order:
-        data = config.get(section, {})
-        if not data:
-            continue
-        output.append("")
-        output.extend(_section_header(section))
-        output.append("")
-        for key, value in data.items():
-            output.append(_kv_line(section, key, value))
-        output.append("")
-
+    output = [CONFIG_HEADER]
+    for section in _WRITE_ORDER:
+        if config.get(section):
+            output += _section(section, config[section])
     for fit in config.get("fits", []):
-        label = fit.get("_label", "FIT?")
-        output.append("")
-        output.extend(_section_header("FIT"))
-        output[-1] = f"*{label}"   # replace generic *FIT with actual label
-        output.append("")
-        for key, value in fit.items():
-            if key == "_label":
-                continue
-            output.append(_kv_line("FIT", key, value))
-        output.append("")
+        output += _section(fit.get("_label", "FIT?"), fit)
 
-    path.write_text("\n".join(output), encoding="utf-8")
+    path.write_text("\n".join(output) + "\n", encoding="utf-8")
     logger.debug("Wrote config to '%s'", path)

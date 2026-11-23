@@ -142,7 +142,7 @@ class TestBaseFunctions:
 
 class TestLayerForwardModel:
 
-    def _build(self, with_aero=False, polydeg=0, model_gas_emission=False):
+    def _build(self, with_aero=False, polydeg=0, model_plume_emission=False):
         gas_luts = {"SO2": _flat_gas_lut("SO2", 0.5)}
         aero_luts = {}
         aero = ()
@@ -166,9 +166,9 @@ class TestLayerForwardModel:
                                ParameterKind.SPECTRAL))
         params = ParameterSet(plist)
 
-        geom = _geom(model_gas_emission=model_gas_emission)
+        geom = _geom(model_plume_emission=model_plume_emission)
         win  = _window(plume=("SO2",), aero=aero, polydeg=polydeg,
-                       model_gas_emission=model_gas_emission)
+                       model_plume_emission=model_plume_emission)
         fm = LayerForwardModel(ref, params, geom, _Retr(), win, _WN)
         return fm, params
 
@@ -219,10 +219,10 @@ class TestLayerForwardModel:
 
     def test_emission_term_raises_floor(self):
         # With emission, absorption lines don't go as deep (added emission)
-        fm_no,  p_no  = self._build(model_gas_emission=False)
-        fm_em,  p_em  = self._build(model_gas_emission=True)
+        fm_no,  p_no  = self._build(model_plume_emission=False)
+        fm_em,  p_em  = self._build(model_plume_emission=True)
         F_no = fm_no.model_highres(p_no.p0_vector())
-        # emission build needs gasE_temp + source_temp params; add them
+        # emission build needs plumeE_temp + source_temp params; add them
         # (rebuild with the extra temperature params)
         F_em = fm_em.model_highres(p_em.p0_vector())
         # Emission adds a positive term, so F_em >= F_no everywhere
@@ -231,7 +231,7 @@ class TestLayerForwardModel:
     def test_continuum_plume_gas_emits_at_gasE_temp(self):
         """
         A continuum plume gas (2-D T x VMR LUT, e.g. plume H2O) contributes to
-        the self-emission OD, queried at gasE_temp.  It used to be skipped, so
+        the self-emission OD, queried at plumeE_temp.  It used to be skipped, so
         its emission was silently dropped while its absorption was kept.
         """
         temp_nodes = np.linspace(300.0, 1000.0, 8)
@@ -249,13 +249,13 @@ class TestLayerForwardModel:
             Parameter("poly0", 1.0, True, (-10, 10), ParameterKind.POLYNOMIAL),
             Parameter("H2O", 2.0, True, (0, np.inf), ParameterKind.GAS_PLUME,
                       ref_column=1e20),
-            Parameter("gas_temp", 800.0, False, (300, 1000), ParameterKind.TEMPERATURE),
-            Parameter("gasE_temp", 500.0, False, (300, 1000), ParameterKind.TEMPERATURE),
+            Parameter("plume_temp", 800.0, False, (300, 1000), ParameterKind.TEMPERATURE),
+            Parameter("plumeE_temp", 500.0, False, (300, 1000), ParameterKind.TEMPERATURE),
             Parameter("fov", 0.02, False, (0.001, 0.2), ParameterKind.SPECTRAL),
         ])
         win = _window(plume=("H2O",), continuum_gases=("H2O",),
-                      model_gas_emission=True)
-        fm = LayerForwardModel(ref, params, _geom(model_gas_emission=True),
+                      model_plume_emission=True)
+        fm = LayerForwardModel(ref, params, _geom(model_plume_emission=True),
                                _Retr(), win, _WN)
 
         p = params.unpack(params.p0_vector())

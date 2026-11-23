@@ -2,7 +2,8 @@
 The composition analysis on the command line:
 
     plumeIR analyse RUN_FOLDER [RUN_FOLDER ...] [--output-dir DIR] [--width W]
-                    [--spectra] [--reference GAS] [--gases GAS ...] [--min-r2 R2]
+                    [--spectra] [--reference GAS] [--gases GAS ...]
+                    [--exclude SPECIES ...] [--min-r2 R2]
                     [--no-jackknife] [--independent-errors] [--no-plots]
     python -m plumeIR.analysis ...
 
@@ -58,6 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="gas the ratios are quoted against (default SO2, else the first)")
     p.add_argument("--gases", nargs="+", metavar="GAS",
                    help="gases to analyse (default every target gas of the run)")
+    p.add_argument("--exclude", nargs="+", metavar="SPECIES", default=(),
+                   help="species to leave out (e.g. WATER where it falls as the plume "
+                        "rises); never inferred from the data")
     p.add_argument("--min-r2", type=float, metavar="R2",
                    help="leave out spectra whose target window fitted below this R²")
     p.add_argument("--no-jackknife", action="store_true",
@@ -136,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                                 unit="spectra" if args.spectra else "minutes",
                                 reference=args.reference,
                                 gases=tuple(args.gases) if args.gases else None,
+                                exclude=tuple(args.exclude),
                                 min_r2=args.min_r2, jackknife=not args.no_jackknife,
                                 correlated=not args.independent_errors)
     out_dir = (args.output_dir or args.runs[0] / ANALYSIS_DIR).expanduser().resolve()

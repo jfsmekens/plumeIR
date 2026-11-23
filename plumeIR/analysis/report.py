@@ -58,6 +58,11 @@ class AnalysisSettings:
         Gas the ratios are quoted against; SO2 when present, else the first.
     gases : tuple of str or None
         Gases to analyse; every target gas of the run when ``None``.
+    exclude : tuple of str
+        Species left out of the analysis, from ``gases`` or the run's
+        targets (e.g. WATER on the layer example, which falls as the plume
+        rises; developer, 2026-11-19). Never inferred: a species that
+        anti-correlates with the reference can still be an emission.
     min_r2 : float or None
         Spectra whose target window fitted below this R² are left out.
     jackknife : bool
@@ -71,6 +76,7 @@ class AnalysisSettings:
     unit:       str = "minutes"
     reference:  str | None = None
     gases:      tuple | None = None
+    exclude:    tuple = ()
     min_r2:     float | None = None
     jackknife:  bool = True
     correlated: bool = True
@@ -154,6 +160,13 @@ def analyse_table(comp: CompositionTable, label: str, run_dir: Path,
     if missing:
         raise PlumeIRError(f"{label}: {missing} are not targets of the run "
                            f"(targets: {comp.species})")
+    # An excluded species may be a target of some runs only (a comparison of
+    # several): absent here is worth a warning (a typo?), not an error.
+    absent = [g for g in settings.exclude if g not in comp.species]
+    if absent:
+        logger.warning("%s: excluded %s not among the targets %s", label, absent,
+                       comp.species)
+    gases = [g for g in gases if g not in settings.exclude]
     if len(gases) < 2:
         raise PlumeIRError(f"{label}: a composition needs at least two species, got {gases}")
     molar = [g for g in gases if g in comp.gases]
@@ -295,6 +308,8 @@ def analysis_summary(analyses: list[RunAnalysis], settings: AnalysisSettings,
              "√MSWD-scaled, are",
              "                in ratios.csv: 1.4-1.9x smaller on the validation run, "
              "missing slow variation)"]
+    if settings.exclude:
+        lines.append(f"excluded        {', '.join(settings.exclude)}")
     if settings.min_r2 is not None:
         lines.append(f"min R²          {settings.min_r2:g}")
     if versions:

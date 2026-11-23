@@ -457,6 +457,11 @@ class TestInstrumentILS:
 
     Correcting both on the MIDAC brought ``fov`` back to 15.9 / 28.2 mrad
     against the 21 mrad nominal, and moved HCl by 10-12%.
+
+    (2026-11-21) Halving the record holds for the double-sided Bruker only.
+    The MIDAC interferograms are single-sided (``IGRAMSIDE Single``), with
+    ``ZPD - SKIP POINTS`` = 256 points before ZPD, so their max OPD is
+    (32768 - 256) / LWN = 2.058 cm.
     """
 
     @_has_bruker
@@ -480,29 +485,58 @@ class TestInstrumentILS:
         from plumeIR.spectra.spectrum import read_midac
         ils = read_midac(_MIDAC_FILE).ils
         assert ils is not None
-        assert ils.max_opd == pytest.approx(1.037, abs=0.005)
+        assert ils.single_sided is True and ils.n_pre_zpd == 256
+        assert ils.max_opd == pytest.approx(2.058, abs=0.001)
         assert ils.apod_type == "triangle"      # config said "NB medium"
         assert ils.n_points == 32768            # 2**15, the transform length
         assert ils.zff == 2
 
     @_has_bruker
     @_has_midac
-    def test_both_instruments_agree_on_opd(self):
-        """Independent formats, same 32768-point transform at a ~15798 HeNe."""
+    def test_same_record_length_different_sidedness(self):
+        """Same 32768-point record at a ~15798 HeNe; Bruker double-sided, MIDAC not."""
         from plumeIR.spectra.spectrum import read_bruker, read_midac
-        a = read_bruker(_BRUKER_PLUME).ils.max_opd
-        b = read_midac(_MIDAC_FILE).ils.max_opd
-        assert a == pytest.approx(b, rel=1e-3)
+        a, b = read_bruker(_BRUKER_PLUME).ils, read_midac(_MIDAC_FILE).ils
+        assert a.single_sided is False and b.single_sided is True
+        assert 2 * a.max_opd == pytest.approx(b.max_opd * 32768 / (32768 - 256),
+                                              rel=1e-3)
 
     @_has_midac
     def test_derivation_agrees_with_points_over_lwn(self):
         """
-        The two independent routes to 2L must agree:
+        The two independent routes to the record length must agree:
         ``1/(dnu*ZFF)`` from the stored grid, and ``POINTS/LWN``.
         """
         from plumeIR.spectra.spectrum import read_midac
         ils = read_midac(_MIDAC_FILE).ils
-        assert ils.n_points / ils.lwn / 2 == pytest.approx(ils.max_opd, rel=1e-3)
+        assert (ils.n_points - ils.n_pre_zpd) / ils.lwn == pytest.approx(ils.max_opd,
+                                                                          rel=1e-3)
+
+    def test_single_sided_derivation(self, caplog):
+        from plumeIR.spectra.spectrum import _derive_max_opd
+        x = 500.0 + 15798.0 / 65536 * np.arange(1000)     # 32768 points, ZFF 2
+        two_l = _derive_max_opd(x, 2, n_points=32768, lwn=15798.0)
+        assert two_l == pytest.approx(32768 / 15798.0 / 2)
+        one = _derive_max_opd(x, 2, n_points=32768, lwn=15798.0,
+                              single_sided=True, n_pre_zpd=256)
+        assert one == pytest.approx((32768 - 256) / 15798.0)
+        with caplog.at_level("WARNING"):
+            assert _derive_max_opd(x, 2, n_points=32768, lwn=15798.0,
+                                   single_sided=True, n_pre_zpd=None) is None
+        assert "before ZPD" in caplog.text
+
+    @_has_bruker
+    def test_single_sided_bruker_gives_no_max_opd(self, caplog):
+        """OPUS AQM S*: the pre-ZPD length is not read, so no value is guessed."""
+        from plumeIR.spectra import spectrum as sp
+        s = sp.read_bruker(_BRUKER_PLUME)
+        assert s.metadata["Acquisition"]["AQM"] == "DD"       # the real file
+        assert sp._bruker_ils(s.metadata, s.x, "f").single_sided is False
+        meta = {**s.metadata, "Acquisition": {**s.metadata["Acquisition"], "AQM": "SN"}}
+        with caplog.at_level("WARNING"):
+            ils = sp._bruker_ils(meta, s.x, "f")
+        assert ils.single_sided is True and ils.max_opd is None
+        assert "single-sided Bruker" in caplog.text
 
     def test_derive_returns_none_without_zff(self):
         from plumeIR.spectra.spectrum import _derive_max_opd

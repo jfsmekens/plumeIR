@@ -66,6 +66,17 @@ POSSIBLE_AEROSOLS: list[str] = sorted(AEROSOL_SPECIES)
 #: ``HNO3`` was both, and ``H2SO4`` also exists as a (short-lived) gas.
 LEGACY_AEROSOL_NAMES: dict[str, str] = {"H2SO4": "H2SO4_aq", "HNO3": "HNO3_aq"}
 
+#: Former parameter names (renamed 2026-11-19, developer): plume quantities are
+#: named ``plume...`` in every geometry, and the shift is ``shift`` (its flag
+#: stays ``fit_shift``).  Old configs (``targets``, ``sigma_prior_<param>``)
+#: and old run folders (``results_long.csv``, ``fits.npz``) are read with the
+#: new names; ``docs/WINDOW_CONTROLS.md`` section 6.
+LEGACY_PARAMETER_NAMES: dict[str, str] = {
+    "gas_temp":  "plume_temp",
+    "gasE_temp": "plumeE_temp",
+    "nu_shift":  "shift",
+}
+
 #: The aerosol with a 2-D (radius, weight fraction) table.
 H2SO4_AQ = "H2SO4_aq"
 
@@ -227,11 +238,11 @@ PLOT_COLORS: dict[str, str] = {
     "OC":         "#7A0177",    # plum
     # Retrieval diagnostics
     "source_temp": "r",
-    "gas_temp":    "orange",
-    "gasE_temp":   "darkorange",
+    "plume_temp":    "orange",
+    "plumeE_temp":   "darkorange",
     "E_frac":      "k",
     "fov":         "k",
-    "nu_shift":    "k",
+    "shift":    "k",
     "max_opd":     "k",
     "R2":          "k",
     "RMSE":        "k",
@@ -275,10 +286,10 @@ DARK_COLORS: dict[str, str] = {
     "DUST":        "wheat",
     "OC":          "burlywood",
     "source_temp": "r",
-    "gas_temp":    "orange",
-    "gasE_temp":   "darkorange",
+    "plume_temp":    "orange",
+    "plumeE_temp":   "darkorange",
     "fov":         "w",
-    "nu_shift":    "w",
+    "shift":    "w",
     "max_opd":     "w",
     "R2":          "w",
     "RMSE":        "w",
@@ -376,12 +387,12 @@ PRETTY_NAMES: dict[str, str] = {
     "R2":          r"$R^2$",
     "RMSE":        "RMS error",
     "source_temp": r"$T_{source}$",
-    "gas_temp":    r"$T_{gas}$",
-    "gasE_temp":   r"$T_{gas}(E)$",
+    "plume_temp":    r"$T_{plume}$",
+    "plumeE_temp":   r"$T_{plume}(E)$",
     "E_frac":      r"$X_{\varepsilon}$",
     "fov":         r"$FOV$",
     "max_opd":     r"$OPD_{max}$",
-    "nu_shift":    r"$\nu_{shift}$",
+    "shift":    r"$\nu_{shift}$",
     "N/A":         r"$n/a$",
 }
 
@@ -414,9 +425,9 @@ UNITS: dict[str, str] = {
     "g.cm^-3":      r"$g\cdot cm^{-3}$",
     "g.m^-3":       r"$g\cdot m^{-3}$",
     "fov":          r"$mrad$",
-    "nu_shift":     r"$cm^{-1}$",
-    "gas_temp":     r"$K$",
-    "gasE_temp":    r"$K$",
+    "shift":     r"$cm^{-1}$",
+    "plume_temp":     r"$K$",
+    "plumeE_temp":    r"$K$",
     "source_temp":  r"$K$",
     "max_opd":      r"$cm$",
 }

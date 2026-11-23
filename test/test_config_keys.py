@@ -336,13 +336,18 @@ def test_path_keys_come_from_the_catalogue():
     assert RFM_ATM_KEYS == {("GEOMETRY", "atm_path")}
 
 
-def test_written_comments_come_from_the_catalogue(tmp_path):
+def test_written_config_has_values_only(tmp_path):
+    """The help text stays in the catalogue (2026-11-18): one header line, no
+    other comment, and the file reads back to the same dict."""
+    from plumeIR.config.parser import CONFIG_HEADER
     out = tmp_path / "out.ini"
-    write_config(read_config(_write(tmp_path, extra_defaults="SO2_conc : 2")), out)
-    text = out.read_text(encoding="utf-8")
-    assert "# " + keys.KEYS[("GEOMETRY", "pathlength")].comment() in text
-    assert "# " + keys.KEYS[("FIT", "fit_window")].comment() in text
-    assert "# " + keys.SECTION_HELP["DEFAULTS"] in text
+    raw = read_config(_write(tmp_path, extra_defaults="SO2_conc : 2"))
+    write_config(raw, out)
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == CONFIG_HEADER and "CONFIG_REFERENCE.md" in CONFIG_HEADER
+    assert not [l for l in lines[1:] if "#" in l]
+    assert "pathlength           : " in "\n".join(lines)
+    assert read_config(out) == raw
 
 
 def test_parser_has_no_comment_table():
@@ -403,3 +408,108 @@ def test_moved_keys_are_written_in_the_new_section(tmp_path):
     text = out.read_text()
     assert "*PREPROCESS" in text
     assert text.index("subtract_self") > text.index("*PREPROCESS")
+
+
+# =============================================================================
+# Renamed keys and parameters (2026-11-19): fit_<parameter>, plume..., shift
+# =============================================================================
+
+def test_renamed_keys_read_with_a_warning(tmp_path, caplog):
+    """An old config builds the same objects under the new names, and says so."""
+    with caplog.at_level(logging.WARNING, logger="plumeIR.config.parser"):
+        cfg = _build(tmp_path, extra_geom="fit_gas_temp : True\nmodel_gas_emission : False",
+                     extra_retr="fit_size_aero : False\nnu_shift : 0.05",
+                     extra_fit="fit_aero_composition : False")
+    assert cfg["geometry"].fit_plume_temp is True
+    assert cfg["retrieval"].fit_r0 is False
+    assert cfg["retrieval"].shift == pytest.approx(0.05)
+    assert cfg["windows"][0].fit_wt is False
+    for old, new in (("fit_gas_temp", "fit_plume_temp"), ("fit_size_aero", "fit_r0"),
+                     ("nu_shift", "shift"), ("fit_aero_composition", "fit_wt"),
+                     ("model_gas_emission", "model_plume_emission")):
+        assert f"{old} → {new}" in caplog.text
+
+
+def test_renamed_key_is_parsed_by_the_new_keys_type(tmp_path):
+    """A list value of a renamed flags key reaches the builder as a list."""
+    from plumeIR.config.parser import read_config
+    raw = read_config(_write(tmp_path, extra_retr="fit_size_aero : ASH, H2SO4_aq"))
+    assert raw["RETRIEVAL"]["fit_r0"] == ["ASH", "H2SO4_aq"]
+
+
+def test_renamed_targets_and_sigma_prior():
+    from plumeIR.config.parser import migrate_renamed_keys
+    raw = {"RETRIEVAL": {"sigma_prior_gas_temp": 20.0, "sigma_prior_SO2": 1.0},
+           "fits": [{"_label": "FIT0", "targets": ["SO2", "gas_temp", "nu_shift"]}]}
+    out = migrate_renamed_keys(raw)
+    assert out["RETRIEVAL"] == {"sigma_prior_plume_temp": 20.0, "sigma_prior_SO2": 1.0}
+    assert out["fits"][0]["targets"] == ["SO2", "plume_temp", "shift"]
+    assert raw["fits"][0]["targets"] == ["SO2", "gas_temp", "nu_shift"]   # input untouched
+
+
+def test_new_name_wins_over_the_old(caplog):
+    from plumeIR.config.parser import migrate_renamed_keys
+    raw = {"GEOMETRY": {"fit_tplume": True, "fit_plume_temp": False}}
+    with caplog.at_level(logging.WARNING, logger="plumeIR.config.parser"):
+        out = migrate_renamed_keys(raw)
+    assert out["GEOMETRY"] == {"fit_plume_temp": False}
+    assert "also set as fit_plume_temp" in caplog.text
+
+
+def test_old_emission_flags_map_to_one_key():
+    from plumeIR.config.parser import migrate_renamed_keys
+    out = migrate_renamed_keys({"GEOMETRY": {"fit_tplume": True, "fit_tprox": False,
+                                             "fit_tdist": True}})
+    assert out["GEOMETRY"] == {"fit_plume_temp": True, "fit_dt_prox": False,
+                               "fit_dt_dist": True}
+
+
+def test_old_run_folder_parameter_names_are_read_as_new(tmp_path):
+    """results_long.csv and fits.npz written before the rename read with new names."""
+    import numpy as np
+    import pandas as pd
+    from plumeIR.output import FitArchive
+    from plumeIR.retrieval.results import ResultsTable
+    cols = ["spectrum_id", "window", "parameter", "species", "kind", "varied", "value",
+            "error", "scd", "scd_error", "pres", "temp", "is_target", "success",
+            "rmse", "r2"]
+    rows = [["s0", "FIT0", p, p, k, True, 1.0, 0.1, "", "", "", "", t, True, 1.0, 0.99]
+            for p, k, t in (("gas_temp", "TEMPERATURE", True),
+                            ("nu_shift", "SPECTRAL", False),
+                            ("gasE_temp", "TEMPERATURE", False))]
+    path = tmp_path / "results_long.csv"
+    pd.DataFrame(rows, columns=cols).to_csv(path, index=False)
+    table = ResultsTable.from_csv(path)
+    assert set(table.df["parameter"]) == {"plume_temp", "shift", "plumeE_temp"}
+    assert set(table.df["species"]) == {"plume_temp", "shift", "plumeE_temp"}
+
+    cov = np.array([[[1.0, 0.5], [0.5, 4.0]]])
+    archive = FitArchive({"windows": np.array(["FIT0"]), "spectrum_index": np.array([0]),
+                          "spectrum_id": np.array(["s0"]), "spec_type": np.array(["plume"]),
+                          "FIT0.varied": np.array(["gas_temp", "SO2"]),
+                          "FIT0.covariance": cov})
+    assert archive.correlation("FIT0", "plume_temp", "SO2")[0] == pytest.approx(0.25)
+
+
+# =============================================================================
+# Broad line-shape component keys (2026-11-23)
+# =============================================================================
+
+def test_broad_component_off_by_default(tmp_path):
+    cfg = _build(tmp_path)
+    r = cfg["retrieval"]
+    assert r.broad_frac == 0.0 and not r.fit_broad_frac and not r.fit_broad_width
+    assert all("broad_frac" not in ps for ps in cfg["params"])
+
+
+def test_broad_component_fitted_adds_parameters(tmp_path):
+    cfg = _build(tmp_path, extra_retr="fit_broad_frac : True\nbroad_frac : 0.2\n"
+                                      "fit_broad_width : True\nbroad_width : 0.6")
+    ps = cfg["params"][0]
+    assert ps["broad_frac"].vary and ps["broad_frac"].value == pytest.approx(0.2)
+    assert ps["broad_width"].bounds == (0.05, 5.0)
+
+
+def test_broad_width_needs_the_component_on(tmp_path):
+    with pytest.raises(ConfigError, match="fit_broad_width"):
+        _build(tmp_path, extra_retr="fit_broad_width : True")

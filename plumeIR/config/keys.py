@@ -7,7 +7,7 @@ geometries that read it or require it, whether it is a path, and its help text.
 The parser converts values by the declared type (:mod:`.parser`), the
 validator runs the per-key checks (:mod:`.validator`), the builder takes its
 defaults (:mod:`.builder`), :mod:`.paths` resolves the path keys, and
-``write_config`` and the generated reference (:mod:`.keydoc`) take their text
+the generated reference (:mod:`.keydoc`) takes its text
 from it.  The config dataclasses (:mod:`.objects`) read their defaults through
 :func:`default`.
 
@@ -34,6 +34,9 @@ from types import MappingProxyType
 from plumeIR.constants import (
     APOD_TYPES, CONTINUUM_GASES, POSSIBLE_AEROSOLS, POSSIBLE_GASES,
 )
+from plumeIR.standards import (
+    ATM_TEMP_RANGE, DEFAULT_ATM_TEMP_STEP, DEFAULT_PLUME_TEMP_STEP, PLUME_TEMP_RANGE,
+)
 
 LAYER, EMISSION, SOLAR = "layer", "emission", "solar"
 #: Geometry names, in the order the documentation lists them.
@@ -48,7 +51,8 @@ ALL: frozenset[str] = frozenset(GEOMETRIES)
 KEY_TYPES: tuple[str, ...] = ("bool", "int", "float", "str", "path", "list", "window",
                               "flags")
 
-#: Sections in file order.  ``FIT`` stands for every ``*FITn``.
+#: Sections in file order.  ``FIT`` stands for every ``*FITn`` and for
+#: ``*PATH``, which is a fit window with a ``tracer``.
 SECTIONS: tuple[str, ...] = ("DATA", "MODEL", "GEOMETRY", "PREPROCESS", "RETRIEVAL",
                              "DEFAULTS", "PLOT", "FIT")
 
@@ -58,6 +62,12 @@ SECTIONS: tuple[str, ...] = ("DATA", "MODEL", "GEOMETRY", "PREPROCESS", "RETRIEV
 #: itself a target (seeps, mud volcanoes, fires).  Measured 2026-11-15 on the
 #: layer validation set (docs/CONFIG_GUIDE.md, section 3.1).
 PATH_TRACERS: tuple[str, ...] = ("CH4", "N2O")
+
+#: Section name and window label of the path window (layer): a fit window
+#: whose only purpose is the path diagnostic, with a ``tracer`` and no
+#: targets (developer, 2026-11-18).  Read like a ``*FITn`` section; left out
+#: of the fit panels of the live display and the inspector.
+PATH_SECTION: str = "PATH"
 
 #: Regression methods for gas ratios: Siegel repeated medians (robust, the
 #: default), Theil-Sen (robust), orthogonal distance regression (errors on
@@ -85,8 +95,7 @@ class Key:
         Value when the key is absent or ``None``, unless ``geometry_defaults``
         names the geometry.
     help : str
-        One-line description, written as the key's comment by
-        ``write_config`` and in the generated reference.
+        One-line description, for the generated reference and messages.
     unit : str or None
         Unit, written in square brackets after the help text.
     none : str or None
@@ -115,7 +124,7 @@ class Key:
         What a ``list`` key's items are, for error messages.
     inert : str or None
         Set when the key is read and checked but nothing acts on it in this
-        version: why, for the comment and the reference.
+        version: why, for the reference.
     """
     section: str
     name: str
@@ -168,20 +177,6 @@ class Key:
             return ""
         names = [g for g in GEOMETRIES if g in self.geometries]
         return f"{names[0]} only" if len(names) == 1 else " and ".join(names)
-
-    def comment(self) -> str:
-        """The key's one-line comment: help, unit, meaning of None, geometries."""
-        text = self.help
-        if self.unit:
-            text += f" [{self.unit}]"
-        if self.none:
-            text += f". None = {self.none}"
-        if self.inert:
-            text += f". {self.inert}"
-        note = self.geometry_note()
-        if note:
-            text += f"  ({note})"
-        return text
 
     def limits_text(self) -> str:
         """The allowed values in words, e.g. ``'in (0, 90]'``, or ``''``."""
@@ -298,6 +293,17 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
         help="Padding added to each side of the fit window for ILS convolution"),
     Key("MODEL", "cache_dir", "path", None, none="~/.plumeIR/cache/",
         help="Directory for caching pre-computed references"),
+    # Node spacing of the gas tables' temperature axes (developer,
+    # 2026-11-21): interpolation error goes as its square.
+    Key("MODEL", "plume_temp_step", "float", DEFAULT_PLUME_TEMP_STEP, unit="K",
+        low=0.0, low_open=True, high=PLUME_TEMP_RANGE[1] - PLUME_TEMP_RANGE[0],
+        help="Largest temperature spacing between the nodes of the plume gas "
+             "tables (interpolation error goes as its square; a finer axis "
+             "costs build time and disk, not fit time)"),
+    Key("MODEL", "atm_temp_step", "float", DEFAULT_ATM_TEMP_STEP, unit="K",
+        low=0.0, low_open=True, high=ATM_TEMP_RANGE[1] - ATM_TEMP_RANGE[0],
+        help="Largest temperature spacing between the nodes of the ambient gas "
+             "tables (layer geometry)"),
 
     # --- *GEOMETRY, shared ---------------------------------------------------
     Key("GEOMETRY", "type", "str", required=ALL, choices=GEOMETRIES,
@@ -309,7 +315,7 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
     Key("GEOMETRY", "plume_temp", "float", None, unit="K", **_POSITIVE,
         required=_GEO_LAYER,
         none="ambient at plume_height, from the atmosphere profile (emission, solar)",
-        help="Plume gas temperature (a priori when fitted)"),
+        help="Plume temperature, plume_temp (a priori when fitted)"),
 
     # --- *GEOMETRY, layer ----------------------------------------------------
     Key("GEOMETRY", "pathlength", "float", unit="km", **_POSITIVE,
@@ -326,15 +332,20 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
         help="Plume gas pressure"),
     Key("GEOMETRY", "path_tracer", "str", None, choices=PATH_TRACERS,
         geometries=_GEO_LAYER, none="no path diagnostic",
-        help="Well-mixed ambient gas whose fitted column checks pathlength "
-             "(a diagnostic; it changes no fit). Must be an ambient-only, "
-             "non-target gas of an active window"),
-    Key("GEOMETRY", "fit_gas_temp", "bool", False, geometries=_GEO_LAYER,
-        help="Fit the plume gas temperature (gas_temp)"),
+        help="Deprecated (use a *PATH section with tracer): well-mixed ambient "
+             "gas whose fitted column checks pathlength in every window that "
+             "fits it (a diagnostic; it changes no fit)"),
+    # fit_plume_temp: layer and emission (renamed 2026-11-19 from layer
+    # fit_gas_temp and emission fit_tplume; parser.RENAMED_KEYS)
+    Key("GEOMETRY", "fit_plume_temp", "bool", False,
+        geometries=frozenset({LAYER, EMISSION}),
+        help="Fit the plume temperature (plume_temp); emission needs an explicit "
+             "plume_temp, since its bounds sit about the a priori"),
     Key("GEOMETRY", "fit_atm_temp", "bool", False, geometries=_GEO_LAYER,
         help="Fit the atmospheric temperature (atm_temp)"),
-    Key("GEOMETRY", "model_gas_emission", "bool", False, geometries=_GEO_LAYER,
-        help="Model thermal emission from the hot plume gas (TIR windows only)"),
+    Key("GEOMETRY", "model_plume_emission", "bool", False, geometries=_GEO_LAYER,
+        help="Model thermal emission from the hot plume gas, at its own "
+             "temperature plumeE_temp (TIR windows only)"),
     Key("GEOMETRY", "fit_source_temp", "bool", False, geometries=_GEO_LAYER,
         help="Fit the background source temperature"),
     Key("GEOMETRY", "source_temp", "float", 1500.0, unit="K", **_POSITIVE,
@@ -362,7 +373,7 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
         help="Wavenumber shift and scale by cross-correlation with a model "
              "spectrum: off, report (measured and written), or apply (the "
              "wavenumber axis corrected before the fits, per spectrum; "
-             "nu_shift still fitted)"),
+             "shift still fitted)"),
     Key("PREPROCESS", "reference_spectra", "int", 10, low=1, geometries=_GEO_LAYER,
         help="Number of first spectra whose median top hull is the reference "
              "for the relative scale and temperature (taken from the start of "
@@ -393,13 +404,11 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
         geometries=_GEO_EMISSION,
         help="Observer-level relative humidity",
         inert=_PLANNED_PROX),
-    Key("GEOMETRY", "fit_tplume", "bool", False, geometries=_GEO_EMISSION,
-        help="Fit the plume temperature (needs an explicit plume_temp)"),
-    Key("GEOMETRY", "fit_tprox", "bool", True, geometries=_GEO_EMISSION,
+    Key("GEOMETRY", "fit_dt_prox", "bool", True, geometries=_GEO_EMISSION,
         help="Fit the proximal layer temperature offset"),
     Key("GEOMETRY", "dt_prox", "float", 0.0, unit="K", geometries=_GEO_EMISSION,
         help="A priori proximal layer temperature offset"),
-    Key("GEOMETRY", "fit_tdist", "bool", True, geometries=_GEO_EMISSION,
+    Key("GEOMETRY", "fit_dt_dist", "bool", True, geometries=_GEO_EMISSION,
         help="Fit the distal layer temperature offset"),
     Key("GEOMETRY", "dt_dist", "float", 0.0, unit="K", geometries=_GEO_EMISSION,
         help="A priori distal layer temperature offset"),
@@ -425,11 +434,11 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
         help="Apply parameter bounds during optimisation"),
     Key("RETRIEVAL", "update_params", "bool", False,
         help="Seed each fit with the previous spectrum's result (serial runs only)"),
-    Key("RETRIEVAL", "fit_size_aero", "flags", True, choices=tuple(POSSIBLE_AEROSOLS),
+    Key("RETRIEVAL", "fit_r0", "flags", True, choices=tuple(POSSIBLE_AEROSOLS),
         item="aerosol",
         help="Fit the aerosol effective radius (r0_SPECIES): True, False, or the "
              "aerosols whose size is fitted (the others held)"),
-    Key("RETRIEVAL", "fit_aero_composition", "flags", False,
+    Key("RETRIEVAL", "fit_wt", "flags", False,
         choices=tuple(POSSIBLE_AEROSOLS), item="aerosol",
         help="Fit the aerosol composition (wt_SPECIES, H2SO4_aq only): True, False, "
              "or the aerosols whose composition is fitted"),
@@ -440,6 +449,19 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
     Key("RETRIEVAL", "fov", "float", 0.02, unit="rad", low=0.0, high=1.0,
         low_open=True, high_open=True,
         help="A priori field of view"),
+    # Broad line-shape component (2026-11-23): off unless broad_frac > 0 or
+    # fitted.  Fit once on a good subset of an instrument, then hold.
+    Key("RETRIEVAL", "fit_broad_frac", "bool", False,
+        help="Fit the fraction of the line shape in a second, broader Gaussian "
+             "component (an instrument whose line shape a uniform FOV cannot "
+             "describe, e.g. scattering optics)"),
+    Key("RETRIEVAL", "broad_frac", "float", 0.0, low=0.0, high=1.0,
+        help="Fraction of the line shape in the broad component (0: off; the a "
+             "priori when fitted)"),
+    Key("RETRIEVAL", "fit_broad_width", "bool", False,
+        help="Fit the width of the broad line-shape component"),
+    Key("RETRIEVAL", "broad_width", "float", 0.5, unit="cm⁻¹", low=0.0, low_open=True,
+        help="Standard deviation of the broad line-shape component's Gaussian"),
     Key("RETRIEVAL", "fit_max_opd", "bool", False,
         help="Fit the maximum optical path difference"),
     Key("RETRIEVAL", "max_opd", "float", 1.8, unit="cm", **_POSITIVE,
@@ -450,7 +472,7 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
         help="ILS apodization function"),
     Key("RETRIEVAL", "fit_shift", "bool", True,
         help="Fit the wavenumber shift"),
-    Key("RETRIEVAL", "nu_shift", "float", 0.0, unit="cm⁻¹",
+    Key("RETRIEVAL", "shift", "float", 0.0, unit="cm⁻¹",
         help="A priori wavenumber shift"),
     Key("RETRIEVAL", "fit_offset", "bool", False,
         help="Fit an additive spectral offset"),
@@ -496,26 +518,31 @@ KEYS: Mapping[tuple[str, str], Key] = _keys(
         help="Gases whose continuum follows VMR on a 2-D (T, VMR) table (e.g. H2O). "
              "Every table includes RFM's continuum. For a gas in both roles, the "
              "ambient part only"),
-    Key("FIT", "fit_gas_temp", "bool", None, geometries=_GEO_LAYER,
+    Key("FIT", "fit_plume_temp", "bool", None, geometries=_GEO_LAYER,
         none="inherit from *GEOMETRY",
-        help="Per-window override: fit the plume gas temperature"),
+        help="Per-window override: fit the plume temperature (plume_temp)"),
     Key("FIT", "fit_atm_temp", "bool", None, geometries=_GEO_LAYER,
         none="inherit from *GEOMETRY",
         help="Per-window override: fit the atmospheric temperature"),
-    Key("FIT", "fit_size_aero", "flags", None, choices=tuple(POSSIBLE_AEROSOLS),
+    Key("FIT", "fit_r0", "flags", None, choices=tuple(POSSIBLE_AEROSOLS),
         item="aerosol", none="inherit from *RETRIEVAL",
         help="Per-window override: fit the effective radius (r0_SPECIES) of every "
              "aerosol in this window (True / False) or of those named"),
-    Key("FIT", "fit_aero_composition", "flags", None, choices=tuple(POSSIBLE_AEROSOLS),
+    Key("FIT", "fit_wt", "flags", None, choices=tuple(POSSIBLE_AEROSOLS),
         item="aerosol", none="inherit from *RETRIEVAL",
         help="Per-window override: fit the composition (wt_SPECIES, H2SO4_aq only) "
              "of every aerosol in this window (True / False) or of those named"),
-    Key("FIT", "model_gas_emission", "bool", None, geometries=_GEO_LAYER,
+    Key("FIT", "model_plume_emission", "bool", None, geometries=_GEO_LAYER,
         none="inherit from *GEOMETRY",
         help="Per-window override: model plume gas emission"),
+    Key("FIT", "tracer", "str", None, choices=PATH_TRACERS, geometries=_GEO_LAYER,
+        none="not the path window",
+        help="*PATH only, required there: the well-mixed ambient gas whose fitted "
+             "column measures the source-instrument path (a diagnostic; it changes "
+             "no fit). An atm_gas of this window, a plume gas or target in none"),
     Key("FIT", "plume_temp_from", "str", None, geometries=_GEO_LAYER,
-        none="the window's own gas_temp",
-        help="Label of an earlier window fitting gas_temp (e.g. FIT0); its "
+        none="the window's own plume_temp",
+        help="Label of an earlier window fitting plume_temp (e.g. FIT0); its "
              "per-spectrum value is held fixed here"),
     Key("FIT", "atm_temp_from", "str", None, geometries=_GEO_LAYER,
         none="the window's own atm_temp",
@@ -585,7 +612,7 @@ DEFAULTS_FIELDS: Mapping[str, Mapping[str, Key]] = MappingProxyType({
 _FIELDS_BY_LENGTH: tuple[str, ...] = tuple(sorted(
     set(DEFAULTS_FIELDS[GAS]) | set(DEFAULTS_FIELDS[AEROSOL]), key=len, reverse=True))
 
-#: Section header comments, for ``write_config`` and the reference.
+#: Section descriptions, for the generated reference.
 SECTION_HELP: Mapping[str, str] = MappingProxyType({
     "DATA":      "Point to the data directory and specify file filtering",
     "MODEL":     "Forward model engine settings (RFM and mieEODG)",
@@ -594,7 +621,8 @@ SECTION_HELP: Mapping[str, str] = MappingProxyType({
     "RETRIEVAL": "Retrieval method and parameters passed to the forward model",
     "DEFAULTS":  "Per-species prior overrides, over the built-in tables in standards.py",
     "PLOT":      "Gas ratios and live plotting (optional section)",
-    "FIT":       "Fit window configuration (one *FIT0, *FIT1, ... section per window)",
+    "FIT":       "Fit window configuration (one *FIT0, *FIT1, ... section per window; "
+                 "*PATH for the path window)",
 })
 
 # =============================================================================

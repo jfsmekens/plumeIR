@@ -185,7 +185,7 @@ def _line_forest_case():
     """
     A single-beam fit as in a layer window: a cubic baseline of ~1e5, an
     order-1 gas scaling over a forest of narrow lines, and a real ILS with
-    ``fov`` and ``nu_shift`` free.  Noiseless, so the minimum is the truth.
+    ``fov`` and ``shift`` free.  Noiseless, so the minimum is the truth.
     """
     wn = np.arange(2350.0, 2600.0, 0.04)
     rng = np.random.default_rng(1)
@@ -200,7 +200,7 @@ def _line_forest_case():
         + [Parameter("SO2", 0.5, True, (0.0, np.inf), ParameterKind.GAS_PLUME,
                      ref_column=1e17),
            Parameter("fov", 0.02, True, (0.001, 0.2), ParameterKind.SPECTRAL),
-           Parameter("nu_shift", 0.0, True, (-1.0, 1.0), ParameterKind.SPECTRAL)])
+           Parameter("shift", 0.0, True, (-1.0, 1.0), ParameterKind.SPECTRAL)])
     ref = Reference(wn=wn, gas_luts={"SO2": lut}, geometry_type=GeometryType.LAYER)
     geom = LayerGeometry(pathlength=1.0, atm_temp=290.0, atm_pres=1000.0,
                          plume_temp=450.0, plume_pres=1000.0, plume_thickness=0.05)
@@ -224,13 +224,13 @@ def test_converges_with_single_beam_scale():
     res = NonLinearLeastSquares(plume_restart_scaling=None).fit(forward, params, measured)
     assert res.value("SO2") == pytest.approx(2.0, abs=1e-6)
     assert res.value("fov") == pytest.approx(0.03, abs=1e-6)
-    assert res.value("nu_shift") == pytest.approx(0.05, abs=1e-6)
+    assert res.value("shift") == pytest.approx(0.05, abs=1e-6)
 
 
 def test_rc3_settings_stop_short():
     # The settings up to rc3 stop early: the unscaled xtol test compares each
     # step with ||x|| ~ 1e5, set by the baseline.  Measured while the ILS
-    # kernel carried the FOV shift (fov and nu_shift partly collinear): SO2
+    # kernel carried the FOV shift (fov and shift partly collinear): SO2
     # 1.974, rmse 5.5 against 9e-10.  Since convention A (2026-11-16, the FOV
     # only broadens) this case is well conditioned and the early stop costs
     # no column (SO2 2.0 to 5 digits), but it still stops ~1e4 short in rmse

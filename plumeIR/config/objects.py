@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 
-from plumeIR.config.keys import RATIO_REGRESSIONS, default
+from plumeIR.config.keys import PATH_SECTION, RATIO_REGRESSIONS, default
 
 # Config defaults are declared once, in the key catalogue (config/keys.py,
 # M3d); the fields below read them through ``default``.  Fields without a
@@ -88,10 +88,18 @@ class ModelConfig:
     cache_dir : Path or None
         Directory for caching pre-computed Reference objects.  If ``None``,
         defaults to ``~/.plumeIR/cache/``.
+    plume_temp_step : float
+        Largest node spacing of the plume gas tables' temperature axis [K].
+        Default 10.
+    atm_temp_step : float
+        Largest node spacing of the ambient gas tables' temperature axis
+        [K].  Default 5.
     """
-    nperwn:        float       = default("MODEL", "nperwn")
-    model_padding: float       = default("MODEL", "model_padding")
-    cache_dir:     Path | None = default("MODEL", "cache_dir")
+    nperwn:          float       = default("MODEL", "nperwn")
+    model_padding:   float       = default("MODEL", "model_padding")
+    cache_dir:       Path | None = default("MODEL", "cache_dir")
+    plume_temp_step: float       = default("MODEL", "plume_temp_step")
+    atm_temp_step:   float       = default("MODEL", "atm_temp_step")
 
 
 # =============================================================================
@@ -120,11 +128,11 @@ class LayerGeometry:
         Plume gas pressure [mbar].
     plume_thickness : float
         Thickness of the plume layer [km].
-    fit_gas_temp : bool
+    fit_plume_temp : bool
         Fit the plume gas temperature as a free parameter.
     fit_atm_temp : bool
         Fit the atmospheric temperature as a free parameter.
-    model_gas_emission : bool
+    model_plume_emission : bool
         Include thermal emission from the hot plume gas in the forward model.
     fit_source_temp : bool
         Fit the background source temperature as a free parameter.
@@ -144,9 +152,9 @@ class LayerGeometry:
     plume_temp:          float
     plume_pres:          float
     plume_thickness:     float = default("GEOMETRY", "plume_thickness", "layer")
-    fit_gas_temp:        bool  = default("GEOMETRY", "fit_gas_temp")
+    fit_plume_temp:        bool  = default("GEOMETRY", "fit_plume_temp")
     fit_atm_temp:        bool  = default("GEOMETRY", "fit_atm_temp")
-    model_gas_emission:  bool  = default("GEOMETRY", "model_gas_emission")
+    model_plume_emission:  bool  = default("GEOMETRY", "model_plume_emission")
     fit_source_temp:     bool  = default("GEOMETRY", "fit_source_temp")
     source_temp:         float = default("GEOMETRY", "source_temp")
     no_gas:              bool  = default("GEOMETRY", "no_gas")
@@ -182,7 +190,7 @@ class EmissionGeometry:
 
         It feeds **both** the gas LUT query (absorption line strengths) and the
         Planck self-emission term, as Kirchhoff requires for a single
-        near-isothermal layer.  When ``fit_tplume`` is set it is fitted
+        near-isothermal layer.  When ``fit_plume_temp`` is set it is fitted
         directly, bounded about ambient by ``TEMP_DEFAULTS['plume_temp']``.
         There is deliberately no ``dt_plume`` offset: an offset that moved only
         the emission level was exactly degenerate with the plume column: a trace
@@ -194,14 +202,14 @@ class EmissionGeometry:
     obs_rh : float or None
         Observer-level relative humidity [%].  Not used in v3.0, as
         ``obs_temp``.
-    fit_tplume : bool
+    fit_plume_temp : bool
         Fit ``plume_temp`` as a free parameter.  Default False — see above.
-    fit_tprox : bool
+    fit_dt_prox : bool
         Fit the proximal layer temperature offset as a free parameter.
     dt_prox : float
         A priori proximal layer temperature offset [K].  Applied analytically
         to the proximal effective emission temperature ``T_eff``.
-    fit_tdist : bool
+    fit_dt_dist : bool
         Fit the distal layer temperature offset as a free parameter.
     dt_dist : float
         A priori distal layer temperature offset [K].  Applied analytically
@@ -243,10 +251,10 @@ class EmissionGeometry:
     plume_temp:      float | None = default("GEOMETRY", "plume_temp")
     obs_temp:        float | None = default("GEOMETRY", "obs_temp")
     obs_rh:          float | None = default("GEOMETRY", "obs_rh")
-    fit_tplume:      bool  = default("GEOMETRY", "fit_tplume")
-    fit_tprox:       bool  = default("GEOMETRY", "fit_tprox")
+    fit_plume_temp:  bool  = default("GEOMETRY", "fit_plume_temp")
+    fit_dt_prox:     bool  = default("GEOMETRY", "fit_dt_prox")
     dt_prox:         float = default("GEOMETRY", "dt_prox")
-    fit_tdist:       bool  = default("GEOMETRY", "fit_tdist")
+    fit_dt_dist:     bool  = default("GEOMETRY", "fit_dt_dist")
     dt_dist:         float = default("GEOMETRY", "dt_dist")
     h2o_scaling:     int   = default("GEOMETRY", "h2o_scaling")
     model_aero_scattering: bool = default("GEOMETRY", "model_aero_scattering")
@@ -361,11 +369,11 @@ class Retrieval:
         Apply parameter bounds during optimisation.
     update_params : bool
         Seed each fit with the result of the previous spectrum.
-    fit_size_aero : bool or tuple of str
+    fit_r0 : bool or tuple of str
         Fit aerosol effective radius (``r0_{SPECIES}``) as a free parameter:
         for every aerosol (True / False) or for those named (2026-11-17).
         A window's own value overrides it (``FitWindowConfig``).
-    fit_aero_composition : bool or tuple of str
+    fit_wt : bool or tuple of str
         Fit aerosol composition (``wt_{SPECIES}``, weight fraction) as a free
         parameter, likewise.  Currently only meaningful for H2SO4.  The 2D (r0, wt)
         LUT is always built regardless; this flag controls whether composition
@@ -377,6 +385,10 @@ class Retrieval:
         Fit the instrument FOV as a free parameter.
     fov : float
         A priori FOV [rad].
+    fit_broad_frac, broad_frac, fit_broad_width, broad_width
+        The broad line-shape component (2026-11-23): fraction of the line
+        shape convolved with a Gaussian of standard deviation ``broad_width``
+        [cm⁻¹]; off while ``broad_frac`` is 0 and not fitted.
     fit_max_opd : bool
         Fit the maximum optical path difference as a free parameter.
     max_opd : float
@@ -385,7 +397,7 @@ class Retrieval:
         ILS apodization function name (see constants.APOD_TYPES).
     fit_shift : bool
         Fit wavenumber shift as a free parameter.
-    nu_shift : float
+    shift : float
         A priori wavenumber shift [cm⁻¹].
     fit_offset : bool
         Fit additive spectral offset as a free parameter.
@@ -401,12 +413,16 @@ class Retrieval:
     use_bounds:       bool  = default("RETRIEVAL", "use_bounds")
     update_params:    bool  = default("RETRIEVAL", "update_params")
 
-    fit_size_aero:        bool | tuple[str, ...] = default("RETRIEVAL", "fit_size_aero")
-    fit_aero_composition: bool | tuple[str, ...] = default("RETRIEVAL", "fit_aero_composition") # adds wt_{SPECIES} as a free parameter
+    fit_r0:           bool | tuple[str, ...] = default("RETRIEVAL", "fit_r0")
+    fit_wt:           bool | tuple[str, ...] = default("RETRIEVAL", "fit_wt")  # adds wt_{SPECIES} as a free parameter
     use_babs_aero:        bool  = default("RETRIEVAL", "use_babs_aero")
 
     fit_fov:          bool  = default("RETRIEVAL", "fit_fov")
     fov:              float = default("RETRIEVAL", "fov")
+    fit_broad_frac:   bool  = default("RETRIEVAL", "fit_broad_frac")
+    broad_frac:       float = default("RETRIEVAL", "broad_frac")
+    fit_broad_width:  bool  = default("RETRIEVAL", "fit_broad_width")
+    broad_width:      float = default("RETRIEVAL", "broad_width")
     fit_max_opd:      bool  = default("RETRIEVAL", "fit_max_opd")
     max_opd:          float = default("RETRIEVAL", "max_opd")
     apod_type:        str   = default("RETRIEVAL", "apod_type")
@@ -418,7 +434,7 @@ class Retrieval:
     apod_type_explicit: bool = False
     ils_resolved:       bool = False
     fit_shift:        bool  = default("RETRIEVAL", "fit_shift")
-    nu_shift:         float = default("RETRIEVAL", "nu_shift")
+    shift:            float = default("RETRIEVAL", "shift")
     fit_offset:       bool  = default("RETRIEVAL", "fit_offset")
     offset:           float = default("RETRIEVAL", "offset")
 
@@ -452,19 +468,19 @@ class FitWindowConfig:
         Species or diagnostic parameters to report as primary outputs.
     polydeg : int
         Degree of the multiplicative background polynomial.
-    fit_gas_temp : bool or None
-        Per-window override of ``LayerGeometry.fit_gas_temp``.
+    fit_plume_temp : bool or None
+        Per-window override of ``LayerGeometry.fit_plume_temp``.
         ``None`` means inherit from the geometry.
     fit_atm_temp : bool or None
         Per-window override of ``LayerGeometry.fit_atm_temp``.
-    model_gas_emission : bool or None
-        Per-window override of ``LayerGeometry.model_gas_emission``.
-    fit_size_aero : bool, tuple of str or None
-        Per-window override of ``RetrievalConfig.fit_size_aero``: True /
+    model_plume_emission : bool or None
+        Per-window override of ``LayerGeometry.model_plume_emission``.
+    fit_r0 : bool, tuple of str or None
+        Per-window override of ``RetrievalConfig.fit_r0``: True /
         False for every aerosol in the window, or the aerosols whose
         effective radius is fitted (the others held); ``None`` inherits.
-    fit_aero_composition : bool, tuple of str or None
-        Per-window override of ``RetrievalConfig.fit_aero_composition``,
+    fit_wt : bool, tuple of str or None
+        Per-window override of ``RetrievalConfig.fit_wt``,
         likewise.
     continuum_gases : tuple[str, ...]
         Gases in this window that use the 2-D (T, VMR) continuum LUT instead
@@ -474,18 +490,22 @@ class FitWindowConfig:
         H2O is a weak interferer (e.g. the 2600–3000 cm⁻¹ HCl region).  Must
         be a subset of the global ``CONTINUUM_GASES`` registry.  Default empty.
     plume_temp_from : str or None
-        Layer only.  Label of an earlier window that fits ``gas_temp``; each
+        Layer only.  Label of an earlier window that fits ``plume_temp``; each
         spectrum's fitted value is passed to this window and held fixed there
         (staged plume temperature).  A receiving window never
-        fits ``gas_temp`` itself.  ``None`` (default): the window fits
-        ``gas_temp`` or holds the ``plume_temp`` a priori, as its flags say.
+        fits ``plume_temp`` itself.  ``None`` (default): the window fits
+        ``plume_temp`` or holds the ``plume_temp`` a priori, as its flags say.
     atm_temp_from : str or None
         Layer only.  Label of an earlier window that fits ``atm_temp``; each
         spectrum's fitted value is held fixed here, as ``plume_temp_from``
-        does for ``gas_temp``.  Measured 2026-11-13: the HCl window
+        does for ``plume_temp``.  Measured 2026-11-13: the HCl window
         (2690-2830 cm⁻¹) fits the ambient temperature without following the
         plume, the CO window does not.  ``None`` (default): the window fits
         ``atm_temp`` or holds the ``atm_temp`` a priori, as its flags say.
+    tracer : str or None
+        Layer only, the ``*PATH`` window only: the ambient gas whose fitted
+        column measures the path (:mod:`plumeIR.path_tracer`).  ``None`` for
+        every other window.
 
     Notes
     -----
@@ -507,14 +527,20 @@ class FitWindowConfig:
     plume_aero:         tuple[str, ...]
     targets:            tuple[str, ...]
     polydeg:            int
-    fit_gas_temp:       bool | None = None
+    fit_plume_temp:     bool | None = None
     fit_atm_temp:       bool | None = None
-    model_gas_emission: bool | None = None
-    fit_size_aero:      bool | tuple[str, ...] | None = None
-    fit_aero_composition: bool | tuple[str, ...] | None = None
+    model_plume_emission: bool | None = None
+    fit_r0:             bool | tuple[str, ...] | None = None
+    fit_wt:             bool | tuple[str, ...] | None = None
     continuum_gases:    tuple[str, ...] = ()
     plume_temp_from:    str | None = None
     atm_temp_from:      str | None = None
+    tracer:             str | None = None
+
+    @property
+    def is_path(self) -> bool:
+        """The ``*PATH`` window: a path diagnostic, with no targets."""
+        return self.label == PATH_SECTION
 
     @property
     def dual_gases(self) -> tuple[str, ...]:

@@ -27,6 +27,7 @@ fraction would change if it were.  Gases keep their package colours
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Mapping
 
 import numpy as np
@@ -40,6 +41,8 @@ from plumeIR.analysis.data import is_mass_only
 from plumeIR.plotting.analysis import (
     _break_segments, format_time_axis, pretty, ratio_label, time_values,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -364,10 +367,26 @@ def draw_composition_donut(
     mass : bool
         Mass fractions over every species, aerosols included, instead of
         molar fractions over the gases.
+
+    Notes
+    -----
+    A species whose fraction is negative (its loading on the plume
+    component is: it falls as the plume rises, as WATER does beside
+    H2SO4_aq on the layer example, slope −0.053 against SO2) has no slice.
+    It is named with its fraction under the donut and logged; the tables
+    keep it, and the other slices keep their fractions as computed, so the
+    drawn ones add up to slightly more than 100%.
     """
     col, col_err = ("mass_fraction", "mass_fraction_err") if mass else ("fraction", "fraction_err")
     t = c.ratios[np.isfinite(c.ratios[col])].sort_values(col, ascending=False)
     t = t.rename(columns={col: "_f", col_err: "_e"})
+    negative = t[t["_f"] <= 0]
+    t = t[t["_f"] > 0]
+    if len(negative):
+        logger.warning("Composition donut: %s not drawn, fraction not positive (%s); "
+                       "the species falls as the plume rises",
+                       ", ".join(negative.index),
+                       ", ".join(_percent(f) for f in negative["_f"]))
     colors = gas_colors(list(t.index)) if colors is None else colors
     minor = minor_gases(t["_f"], threshold)
     major = [g for g in t.index if g not in minor]
@@ -395,6 +414,10 @@ def draw_composition_donut(
     ax.set_aspect("equal")
     ax.set_xlim(-1.45, 1.45)
     ax.set_ylim(-1.25, 1.25)
+    if len(negative):
+        ax.text(0, -1.22, "not drawn (falls as the plume rises): "
+                + ", ".join(f"{pretty(g)} {_percent(f)}" for g, f in negative["_f"].items()),
+                ha="center", va="bottom", fontsize=ANNOTATION_SIZE, color="0.3")
     if legend:
         ax.legend(handles, [f"{pretty(g)}  {_percent(t.loc[g, '_f'], t.loc[g, '_e'])}"
                             for g in names], loc="upper center", bbox_to_anchor=(0.5, 0.0),

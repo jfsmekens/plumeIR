@@ -4,9 +4,9 @@ Generated from `plumeIR/config/keys.py` by `python -m plumeIR.config.keydoc`;
 do not edit by hand.
 
 A config is a text file of sections, `*DATA`, `*MODEL`, `*GEOMETRY`, the
-optional `*PREPROCESS`, `*RETRIEVAL`, `*DEFAULTS`, the optional `*PLOT`, and
-one `*FIT0`, `*FIT1`, ...
-per fit window, each followed by `key : value` lines. `#` starts a comment
+optional `*PREPROCESS`, `*RETRIEVAL`, `*DEFAULTS`, the optional `*PLOT`,
+one `*FIT0`, `*FIT1`, ... per fit window, and the optional `*PATH` (layer),
+each followed by `key : value` lines. `#` starts a comment
 (inside a value only after a space, so a path may contain `#`). Key names are
 case-blind.
 
@@ -46,6 +46,8 @@ Forward model engine settings (RFM and mieEODG).
 | `nperwn` | float | `25.0` | points per cm⁻¹ | > 0 | Model spectral sampling |
 | `model_padding` | float | `50.0` | cm⁻¹ | > 0 | Padding added to each side of the fit window for ILS convolution |
 | `cache_dir` | path | `None` |  |  | Directory for caching pre-computed references. None = ~/.plumeIR/cache/ |
+| `plume_temp_step` | float | `10.0` | K | in (0, 700] | Largest temperature spacing between the nodes of the plume gas tables (interpolation error goes as its square; a finer axis costs build time and disk, not fit time) |
+| `atm_temp_step` | float | `5.0` | K | in (0, 100] | Largest temperature spacing between the nodes of the ambient gas tables (layer geometry) |
 
 ## `*GEOMETRY`
 
@@ -55,15 +57,15 @@ Measurement geometry and geometry-specific forward model flags.
 |---|---|---|---|---|---|---|
 | `type` | str | required |  | one of layer, emission, solar | all | Measurement geometry |
 | `plume_thickness` | float | required in emission; layer: `0.05`; else `None` | km | > 0 | all | Thickness of the plume layer. None = no plume (solar) |
-| `plume_temp` | float | required in layer; else `None` | K | > 0 | all | Plume gas temperature (a priori when fitted). None = ambient at plume_height, from the atmosphere profile (emission, solar) |
+| `plume_temp` | float | required in layer; else `None` | K | > 0 | all | Plume temperature, plume_temp (a priori when fitted). None = ambient at plume_height, from the atmosphere profile (emission, solar) |
 | `pathlength` | float | required in layer | km | > 0 | layer | Total geometric path length through plume and atmosphere |
 | `atm_temp` | float | required in layer | K | > 0 | layer | Ambient atmospheric temperature |
 | `atm_pres` | float | required in layer | mbar | > 0 | layer | Ambient atmospheric pressure |
 | `plume_pres` | float | required in layer | mbar | > 0 | layer | Plume gas pressure |
-| `path_tracer` | str | `None` |  | one of CH4, N2O | layer | Well-mixed ambient gas whose fitted column checks pathlength (a diagnostic; it changes no fit). Must be an ambient-only, non-target gas of an active window. None = no path diagnostic |
-| `fit_gas_temp` | bool | `False` |  |  | layer | Fit the plume gas temperature (gas_temp) |
+| `path_tracer` | str | `None` |  | one of CH4, N2O | layer | Deprecated (use a *PATH section with tracer): well-mixed ambient gas whose fitted column checks pathlength in every window that fits it (a diagnostic; it changes no fit). None = no path diagnostic |
+| `fit_plume_temp` | bool | `False` |  |  | layer and emission | Fit the plume temperature (plume_temp); emission needs an explicit plume_temp, since its bounds sit about the a priori |
 | `fit_atm_temp` | bool | `False` |  |  | layer | Fit the atmospheric temperature (atm_temp) |
-| `model_gas_emission` | bool | `False` |  |  | layer | Model thermal emission from the hot plume gas (TIR windows only) |
+| `model_plume_emission` | bool | `False` |  |  | layer | Model thermal emission from the hot plume gas, at its own temperature plumeE_temp (TIR windows only) |
 | `fit_source_temp` | bool | `False` |  |  | layer | Fit the background source temperature |
 | `source_temp` | float | `1500.0` | K | > 0 | layer | A priori source temperature |
 | `no_gas` | bool | `False` |  |  | layer | No-gas reference spectrum: not available in v3.0, must be False |
@@ -73,10 +75,9 @@ Measurement geometry and geometry-specific forward model flags.
 | `atm_path` | path (must exist) | required in emission, solar |  |  | emission and solar | RFM-format atmosphere profile (a bare name is also looked for in RFM's atm directory) |
 | `obs_temp` | float | `None` | K | > 0 | emission | Observer-level ambient temperature. **Not used in v3.0; planned as a prior for the proximal layer, with obs_temp and obs_rh** |
 | `obs_rh` | float | `None` | % | in [0, 100] | emission | Observer-level relative humidity. **Not used in v3.0; planned as a prior for the proximal layer, with obs_temp and obs_rh** |
-| `fit_tplume` | bool | `False` |  |  | emission | Fit the plume temperature (needs an explicit plume_temp) |
-| `fit_tprox` | bool | `True` |  |  | emission | Fit the proximal layer temperature offset |
+| `fit_dt_prox` | bool | `True` |  |  | emission | Fit the proximal layer temperature offset |
 | `dt_prox` | float | `0.0` | K |  | emission | A priori proximal layer temperature offset |
-| `fit_tdist` | bool | `True` |  |  | emission | Fit the distal layer temperature offset |
+| `fit_dt_dist` | bool | `True` |  |  | emission | Fit the distal layer temperature offset |
 | `dt_dist` | float | `0.0` | K |  | emission | A priori distal layer temperature offset |
 | `h2o_scaling` | int | `3` |  | one of 0, 1, 2, 3 | emission | Number of atmospheric layers the shared H2O_sc parameter scales (0 disables it) |
 | `model_aero_scattering` | bool | `False` |  |  | emission | Add the aerosol single-scattering source term to the plume |
@@ -94,7 +95,7 @@ What is done to the spectra before the fits (optional section).
 | `subtract_self` | bool | layer: `False`; emission: `True` |  |  | layer and emission | Subtract the instrument self-emission spectrum before fitting |
 | `self_file` | path (must exist) | `None` |  |  | layer | Self-emission spectrum. None = find '*self*' files in the data directory |
 | `background` | str | `report` |  | one of off, report, apply | layer | Additive background from the opaque bands (self-emission scale and zero level): off, report (measured and written), or apply (subtracted instead of the self spectrum, unclipped) |
-| `registration` | str | `report` |  | one of off, report, apply | layer and emission | Wavenumber shift and scale by cross-correlation with a model spectrum: off, report (measured and written), or apply (the wavenumber axis corrected before the fits, per spectrum; nu_shift still fitted) |
+| `registration` | str | `report` |  | one of off, report, apply | layer and emission | Wavenumber shift and scale by cross-correlation with a model spectrum: off, report (measured and written), or apply (the wavenumber axis corrected before the fits, per spectrum; shift still fitted) |
 | `reference_spectra` | int | `10` |  | >= 1 | layer | Number of first spectra whose median top hull is the reference for the relative scale and temperature (taken from the start of the series, so it also works in real time) |
 
 ## `*RETRIEVAL`
@@ -106,16 +107,20 @@ Retrieval method and parameters passed to the forward model.
 | `retrieval_method` | str | `nlls` |  | one of nlls, oe | Retrieval backend: nlls (non-linear least squares) or oe (optimal estimation) |
 | `use_bounds` | bool | `True` |  |  | Apply parameter bounds during optimisation |
 | `update_params` | bool | `False` |  |  | Seed each fit with the previous spectrum's result (serial runs only) |
-| `fit_size_aero` | flags | `True` |  | one of AEROSOL, ASH, DUST, H2SO4_aq, HNO3_aq, ICE, OC, SOOT, WATER | Fit the aerosol effective radius (r0_SPECIES): True, False, or the aerosols whose size is fitted (the others held) |
-| `fit_aero_composition` | flags | `False` |  | one of AEROSOL, ASH, DUST, H2SO4_aq, HNO3_aq, ICE, OC, SOOT, WATER | Fit the aerosol composition (wt_SPECIES, H2SO4_aq only): True, False, or the aerosols whose composition is fitted |
+| `fit_r0` | flags | `True` |  | one of AEROSOL, ASH, DUST, H2SO4_aq, HNO3_aq, ICE, OC, SOOT, WATER | Fit the aerosol effective radius (r0_SPECIES): True, False, or the aerosols whose size is fitted (the others held) |
+| `fit_wt` | flags | `False` |  | one of AEROSOL, ASH, DUST, H2SO4_aq, HNO3_aq, ICE, OC, SOOT, WATER | Fit the aerosol composition (wt_SPECIES, H2SO4_aq only): True, False, or the aerosols whose composition is fitted |
 | `use_babs_aero` | bool | `True` |  |  | Use the aerosol absorption (Babs) rather than extinction (Bext) |
 | `fit_fov` | bool | `True` |  |  | Fit the instrument field of view |
 | `fov` | float | `0.02` | rad | in (0, 1) | A priori field of view |
+| `fit_broad_frac` | bool | `False` |  |  | Fit the fraction of the line shape in a second, broader Gaussian component (an instrument whose line shape a uniform FOV cannot describe, e.g. scattering optics) |
+| `broad_frac` | float | `0.0` |  | in [0, 1] | Fraction of the line shape in the broad component (0: off; the a priori when fitted) |
+| `fit_broad_width` | bool | `False` |  |  | Fit the width of the broad line-shape component |
+| `broad_width` | float | `0.5` | cm⁻¹ | > 0 | Standard deviation of the broad line-shape component's Gaussian |
 | `fit_max_opd` | bool | `False` |  |  | Fit the maximum optical path difference |
 | `max_opd` | float | `1.8` | cm | > 0 | Maximum optical path difference. None = read from the data files; 1.8 where they do not record it |
 | `apod_type` | str | `NB medium` |  | one of Boxcar, Uniform, Triangular, Blackman-Harris, Happ-Genzel, Hamming, Lorenz, Gaussian, NB weak, NB medium, NB strong, Cosine | ILS apodization function. None = read from the data files; NB medium where they do not record it |
 | `fit_shift` | bool | `True` |  |  | Fit the wavenumber shift |
-| `nu_shift` | float | `0.0` | cm⁻¹ |  | A priori wavenumber shift |
+| `shift` | float | `0.0` | cm⁻¹ |  | A priori wavenumber shift |
 | `fit_offset` | bool | `False` |  |  | Fit an additive spectral offset |
 | `offset` | float | `0.0` |  |  | A priori spectral offset |
 
@@ -144,9 +149,11 @@ Keys named by pattern:
 
 ## `*FITn`
 
-Fit window configuration (one *FIT0, *FIT1, ... section per window).
+Fit window configuration (one *FIT0, *FIT1, ... section per window; *PATH for the path window).
 
 Only active windows (`fit : True`) are checked beyond `fit`; "required" means required of an active window.
+
+`*PATH` (layer, at most one) is a fit window whose only purpose is the path check: it takes the keys below, requires `tracer`, has no `targets`, and is labelled `PATH` in the results. The live display and the inspector show no fit panel for it.
 
 | Key | Type | Default | Unit | Allowed | Geometries | Description |
 |---|---|---|---|---|---|---|
@@ -158,12 +165,13 @@ Only active windows (`fit : True`) are checked beyond `fit`; "required" means re
 | `targets` | list | `None` |  |  | all | Species and parameters reported as primary outputs (a species in one window only). None = none |
 | `polydeg` | int | `3` |  | >= 0 | all | Degree of the multiplicative background polynomial (polydeg + 1 coefficients; in v2 it was the coefficient count, so v2's 3 is v3's 2) |
 | `continuum` | list | `None` |  | one of H2O | all | Gases whose continuum follows VMR on a 2-D (T, VMR) table (e.g. H2O). Every table includes RFM's continuum. For a gas in both roles, the ambient part only. None = continuum scaled linearly with the column |
-| `fit_gas_temp` | bool | `None` |  |  | layer | Per-window override: fit the plume gas temperature. None = inherit from *GEOMETRY |
+| `fit_plume_temp` | bool | `None` |  |  | layer | Per-window override: fit the plume temperature (plume_temp). None = inherit from *GEOMETRY |
 | `fit_atm_temp` | bool | `None` |  |  | layer | Per-window override: fit the atmospheric temperature. None = inherit from *GEOMETRY |
-| `fit_size_aero` | flags | `None` |  | one of AEROSOL, ASH, DUST, H2SO4_aq, HNO3_aq, ICE, OC, SOOT, WATER | all | Per-window override: fit the effective radius (r0_SPECIES) of every aerosol in this window (True / False) or of those named. None = inherit from *RETRIEVAL |
-| `fit_aero_composition` | flags | `None` |  | one of AEROSOL, ASH, DUST, H2SO4_aq, HNO3_aq, ICE, OC, SOOT, WATER | all | Per-window override: fit the composition (wt_SPECIES, H2SO4_aq only) of every aerosol in this window (True / False) or of those named. None = inherit from *RETRIEVAL |
-| `model_gas_emission` | bool | `None` |  |  | layer | Per-window override: model plume gas emission. None = inherit from *GEOMETRY |
-| `plume_temp_from` | str | `None` |  |  | layer | Label of an earlier window fitting gas_temp (e.g. FIT0); its per-spectrum value is held fixed here. None = the window's own gas_temp |
+| `fit_r0` | flags | `None` |  | one of AEROSOL, ASH, DUST, H2SO4_aq, HNO3_aq, ICE, OC, SOOT, WATER | all | Per-window override: fit the effective radius (r0_SPECIES) of every aerosol in this window (True / False) or of those named. None = inherit from *RETRIEVAL |
+| `fit_wt` | flags | `None` |  | one of AEROSOL, ASH, DUST, H2SO4_aq, HNO3_aq, ICE, OC, SOOT, WATER | all | Per-window override: fit the composition (wt_SPECIES, H2SO4_aq only) of every aerosol in this window (True / False) or of those named. None = inherit from *RETRIEVAL |
+| `model_plume_emission` | bool | `None` |  |  | layer | Per-window override: model plume gas emission. None = inherit from *GEOMETRY |
+| `tracer` | str | `None` |  | one of CH4, N2O | layer | *PATH only, required there: the well-mixed ambient gas whose fitted column measures the source-instrument path (a diagnostic; it changes no fit). An atm_gas of this window, a plume gas or target in none. None = not the path window |
+| `plume_temp_from` | str | `None` |  |  | layer | Label of an earlier window fitting plume_temp (e.g. FIT0); its per-spectrum value is held fixed here. None = the window's own plume_temp |
 | `atm_temp_from` | str | `None` |  |  | layer | Label of an earlier window fitting atm_temp (e.g. FIT0); its per-spectrum value is held fixed here. None = the window's own atm_temp |
 
 ## `*DEFAULTS`

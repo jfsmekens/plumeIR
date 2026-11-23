@@ -87,13 +87,31 @@ class InstrumentILS:
     * ``apod_type`` was configured as "NB medium" for the MIDAC, whose files
       say ``triangle``.
 
-    Derivation, identical for both formats::
+    * (2026-11-21) the halving above holds for a **double-sided**
+      interferogram only.  The MIDAC files are single-sided (``IGRAMSIDE
+      Single``, Mertz phase correction), so their max OPD is not half the
+      transformed record but nearly all of it: 2.058 cm, not 1.037.
 
-        2L      = 1 / (dnu_displayed * ZFF)      # or POINTS / LWN
-        max_opd = 2L / 2
+    Derivation.  The stored grid spacing gives the length ``S`` of the
+    transformed interferogram record::
 
-    ``dnu_displayed`` is the point spacing of the stored spectrum, which is
-    finer than the true resolution by the zero-fill factor.
+        S = 1 / (dnu_displayed * ZFF)       # = POINTS * interval / LWN
+
+    ``dnu_displayed`` is the point spacing of the stored spectrum, finer than
+    the true resolution by the zero-fill factor.  Then::
+
+        double-sided (record spans -L..+L):        max_opd = S / 2
+        single-sided (record starts n_pre points   max_opd = S * (POINTS - n_pre) / POINTS
+                      before ZPD):
+
+    MIDAC (Essential FTIR) records ``ZPD`` and ``SKIP POINTS`` in the SPC
+    log, and ``ZPD - SKIP POINTS`` is 256 in every local file: the record
+    keeps 256 points before ZPD for the Mertz correction, so ``n_pre = ZPD -
+    SKIP POINTS`` and max_opd = (32768 - 256) / 15798.04 = 2.058 cm (developer,
+    2026-11-21; CHANGELOG, "Maximum OPD of single-sided MIDAC files").  Bruker OPUS records the
+    acquisition mode (``Acquisition.AQM``, ``D*`` double-sided, ``S*``
+    single-sided); a single-sided OPUS file gives no ``max_opd``, since the
+    pre-ZPD length is not read here.
 
     Parameters
     ----------
@@ -108,6 +126,10 @@ class InstrumentILS:
         Zero-fill factor.
     n_points : int or None
         Transform length, where the format reports it.
+    single_sided : bool or None
+        Whether the interferogram is single-sided (``None``: not recorded).
+    n_pre_zpd : int or None
+        Points of a single-sided record before ZPD.
     source : str
         Which file/keys this came from, for provenance in logs.
     """
@@ -117,6 +139,8 @@ class InstrumentILS:
     lwn:       float | None = None
     zff:       int | None   = None
     n_points:  int | None   = None
+    single_sided: bool | None = None
+    n_pre_zpd: int | None   = None
     source:    str          = ""
 
     @property
@@ -127,14 +151,44 @@ class InstrumentILS:
 
 def _derive_max_opd(x: np.ndarray, zff: int | None,
                     n_points: int | None = None,
-                    lwn: float | None = None) -> float | None:
+                    lwn: float | None = None,
+                    *,
+                    single_sided: bool = False,
+                    n_pre_zpd: int | None = None,
+                    interval: float = 1.0) -> float | None:
     """
     Maximum optical path difference [cm] from the stored spectrum grid.
 
-    ``2L = 1 / (dnu * zff)``; ``max_opd = L``.  When ``n_points`` and ``lwn``
-    are both available they give an independent estimate (``2L = N / LWN``)
-    and a mismatch beyond 1% is logged — the two disagreeing means one of the
-    header fields is not what it is assumed to be.
+    The grid spacing gives the transformed record's length ``S = 1 / (dnu *
+    zff)``.  Double-sided: ``max_opd = S / 2``.  Single-sided, with
+    ``n_pre_zpd`` of its ``n_points`` before ZPD: ``max_opd = S * (n_points -
+    n_pre_zpd) / n_points`` (:class:`InstrumentILS`).  When ``n_points`` and
+    ``lwn`` are both available they give an independent ``S = n_points *
+    interval / lwn`` and a mismatch beyond 1% is logged: one of the header
+    fields is then not what it is assumed to be.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Stored wavenumber grid [cm-1].
+    zff : int or None
+        Zero-fill factor.
+    n_points : int or None
+        Transformed record length [points].
+    lwn : float or None
+        Laser wavenumber [cm-1].
+    single_sided : bool
+        The interferogram is single-sided.
+    n_pre_zpd : int or None
+        Points of a single-sided record before ZPD.
+    interval : float
+        Sampling interval in laser fringes (1: one sample per fringe).
+
+    Returns
+    -------
+    float or None
+        ``None`` when the grid or a needed header field is missing (a
+        single-sided record without ``n_points`` and ``n_pre_zpd``).
     """
     x = np.asarray(x, dtype=float)
     if x.size < 2 or not zff:
@@ -142,18 +196,25 @@ def _derive_max_opd(x: np.ndarray, zff: int | None,
     dnu = float(np.median(np.diff(np.sort(x))))
     if not np.isfinite(dnu) or dnu <= 0:
         return None
-    two_l = 1.0 / (dnu * float(zff))
+    span = 1.0 / (dnu * float(zff))
 
     if n_points and lwn:
-        two_l_alt = float(n_points) / float(lwn)
-        if abs(two_l_alt - two_l) / two_l > 0.01:
+        span_alt = float(n_points) * float(interval) / float(lwn)
+        if abs(span_alt - span) / span > 0.01:
             logger.warning(
-                "OPD estimates disagree: %.5f cm from grid spacing vs %.5f cm "
-                "from POINTS/LWN (%.1f%%) — check ZFF and the transform length",
-                two_l / 2, two_l_alt / 2,
-                abs(two_l_alt - two_l) / two_l * 100,
+                "Interferogram length estimates disagree: %.5f cm from grid "
+                "spacing vs %.5f cm from POINTS x interval / LWN (%.1f%%) — check "
+                "ZFF and the transform length",
+                span, span_alt, abs(span_alt - span) / span * 100,
             )
-    return two_l / 2.0
+    if not single_sided:
+        return span / 2.0
+    if not n_points or n_pre_zpd is None or not 0 <= n_pre_zpd < n_points:
+        logger.warning("Single-sided interferogram without a usable point count "
+                       "before ZPD (POINTS %s, before ZPD %s): max_opd not derived",
+                       n_points, n_pre_zpd)
+        return None
+    return span * (n_points - n_pre_zpd) / n_points
 
 
 #: OPUS ``Fourier Transformation.APF`` codes -> ``forward.ils`` vocabulary.
@@ -363,6 +424,53 @@ def _timestamp_from_spc(spc: "SPCFile") -> datetime | None:
 # Bruker reader
 # =============================================================================
 
+def _bruker_ils(metadata: dict, x: np.ndarray, name: str) -> InstrumentILS:
+    """
+    ILS parameters of an OPUS file from its metadata sections.
+
+    Parameters
+    ----------
+    metadata : dict
+        The file's ``Fourier Transformation``, ``Instrument`` and
+        ``Acquisition`` sections (as kept by :func:`read_bruker`).
+    x : np.ndarray
+        Stored wavenumber grid [cm-1].
+    name : str
+        File name, for the log and the provenance string.
+
+    Returns
+    -------
+    InstrumentILS
+        ``max_opd`` is ``None`` for a single-sided acquisition (``AQM S*``).
+    """
+    ft   = metadata.get("Fourier Transformation", {})
+    inst = metadata.get("Instrument", {})
+    zff  = ft.get("ZFF")
+    apf  = str(ft.get("APF", "")).strip().upper()
+    lwn  = inst.get("LWN")
+    # Acquisition mode: D* double-sided, S* single-sided (OPUS AQM).  The
+    # pre-ZPD length of a single-sided OPUS record is not read, so such a file
+    # gives no max_opd (set it in the config).
+    aqm  = str(metadata.get("Acquisition", {}).get("AQM", "")).strip().upper()
+    single = aqm.startswith("S") if aqm else None
+    if single:
+        logger.warning("%s: single-sided Bruker interferogram (AQM %s); max_opd is "
+                       "not derived from it — set max_opd in the config",
+                       name, aqm)
+    ils  = InstrumentILS(
+        max_opd   = (None if single else
+                     _derive_max_opd(x, int(zff) if zff else None,
+                                     lwn=float(lwn) if lwn else None)),
+        apod_type = _OPUS_APF_MAP.get(apf),
+        lwn       = float(lwn) if lwn else None,
+        zff       = int(zff) if zff else None,
+        single_sided = single,
+        source    = f"{name}: Fourier Transformation.ZFF/APF, Instrument.LWN, "
+                    f"Acquisition.AQM",
+    )
+    return ils
+
+
 def read_bruker(path: str | Path) -> Spectrum:
     """
     Read a Bruker OPUS file.
@@ -431,19 +539,7 @@ def read_bruker(path: str | Path) -> Spectrum:
         if section in opus:
             metadata[section] = dict(opus[section])
 
-    ft   = metadata.get("Fourier Transformation", {})
-    inst = metadata.get("Instrument", {})
-    zff  = ft.get("ZFF")
-    apf  = str(ft.get("APF", "")).strip().upper()
-    lwn  = inst.get("LWN")
-    ils  = InstrumentILS(
-        max_opd   = _derive_max_opd(x, int(zff) if zff else None,
-                                    lwn=float(lwn) if lwn else None),
-        apod_type = _OPUS_APF_MAP.get(apf),
-        lwn       = float(lwn) if lwn else None,
-        zff       = int(zff) if zff else None,
-        source    = f"{path.name}: Fourier Transformation.ZFF/APF, Instrument.LWN",
-    )
+    ils = _bruker_ils(metadata, x, path.name)
 
     return Spectrum(
         x=x,
@@ -468,8 +564,12 @@ def _midac_ils(spc_obj: "SPCFile", x: np.ndarray, path: Path) -> InstrumentILS:
     Recover ILS parameters from an SPC log block.
 
     MIDAC/Essential FTIR writes them as free text: the ``key = value`` lines
-    carry 'Laser Wavenumber', 'Zero Fill' and 'Apodization'; another line
-    reads ``POINTS <n>``.  Missing keys give ``None`` rather than a guess.
+    carry 'Laser Wavenumber', 'Laser Sampling Interval', 'Zero Fill' and
+    'Apodization'; others read ``POINTS <n>``, ``ZPD <n>``, ``SKIP POINTS <n>``
+    and ``IGRAMSIDE Single|Double``.  A single-sided record keeps ``ZPD -
+    SKIP POINTS`` points before ZPD (256 in every local file;
+    :class:`InstrumentILS`).  Missing keys give ``None`` rather than a guess;
+    a file without ``IGRAMSIDE`` is taken as double-sided, with a warning.
     """
     log = {k.strip().lower(): v.strip() for k, v in spc_obj.log.items()}
 
@@ -479,38 +579,63 @@ def _midac_ils(spc_obj: "SPCFile", x: np.ndarray, path: Path) -> InstrumentILS:
                 return v
         return None
 
-    lwn = zff = n_points = None
+    lwn = zff = n_points = zpd = skip = None
+    side = None
     try:
         raw = _get("laser wavenumber")
         lwn = float(raw) if raw else None
     except ValueError:
         pass
     try:
+        raw = _get("laser sampling interval")
+        interval = float(raw) if raw else 1.0
+    except ValueError:
+        interval = 1.0
+    try:
         raw = _get("zero fill")            # e.g. "2 x"
         zff = int(str(raw).split()[0]) if raw else None
     except (ValueError, IndexError):
         pass
+    def _int(text: str) -> int | None:
+        try:
+            return int(text.split()[-1])
+        except (ValueError, IndexError):
+            return None
+
     for line in spc_obj.log_lines:
         text = line.strip()
-        if text.upper().startswith("POINTS"):
-            try:
-                n_points = int(text.split()[1])
-            except (ValueError, IndexError):
-                pass
-            break
+        upper = text.upper()
+        if upper.startswith("POINTS") and n_points is None:
+            n_points = _int(text)
+        elif upper.startswith("ZPD") and zpd is None:
+            zpd = _int(text)
+        elif upper.startswith("SKIP POINTS") and skip is None:
+            skip = _int(text)
+        elif upper.startswith("IGRAMSIDE") and side is None:
+            side = text.split()[-1].lower() if len(text.split()) > 1 else None
+
+    if side is None:
+        logger.warning("%s: no IGRAMSIDE in the SPC log; taken as double-sided "
+                       "for max_opd", path.name)
+    single = side == "single"
+    n_pre = (zpd - skip) if single and zpd is not None and skip is not None else None
 
     apod = _get("apodization")
     # The SPC name is already in ils.py's substring vocabulary ('triangle',
     # 'boxcar', ...); pass it through rather than mapping and losing anything
     # unrecognised silently.
     return InstrumentILS(
-        max_opd   = _derive_max_opd(x, zff, n_points=n_points, lwn=lwn),
+        max_opd   = _derive_max_opd(x, zff, n_points=n_points, lwn=lwn,
+                                    single_sided=single, n_pre_zpd=n_pre,
+                                    interval=interval),
         apod_type = apod or None,
         lwn       = lwn,
         zff       = zff,
         n_points  = n_points,
+        single_sided = None if side is None else single,
+        n_pre_zpd = n_pre,
         source    = f"{path.name}: SPC log (Laser Wavenumber / Zero Fill / "
-                    f"Apodization / POINTS)",
+                    f"Apodization / POINTS / ZPD / SKIP POINTS / IGRAMSIDE)",
     )
 
 
@@ -615,11 +740,12 @@ def read_spectrum(path: str | Path) -> Spectrum:
 # Instrument ILS resolution
 # =============================================================================
 
-#: Fallback maximum OPD [cm] when no file supplies one.  Both instruments in
-#: this project are 32768-point transforms at a ~15798 cm-1 HeNe, i.e.
-#: 2L = 2.074 cm and max_opd = 1.037 cm.  This is a *documented guess* for
-#: formats that carry no ILS metadata, and using it is always warned about —
-#: a silent default is exactly how the 2x error survived.
+#: Fallback maximum OPD [cm] when no file supplies one: the double-sided
+#: value for a 32768-point record at a ~15798 cm-1 HeNe (2L = 2.074 cm), as
+#: on the Bruker here; the single-sided MIDAC files give 2.058 cm from their
+#: own headers.  A *documented guess* for formats that carry no ILS metadata,
+#: and using it is always warned about — a silent default is exactly how the
+#: 2x error survived.
 FALLBACK_MAX_OPD_CM: float = 1.037
 
 

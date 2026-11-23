@@ -25,7 +25,13 @@ VMRs of the fitted ambient gases, and of a ratio's intercept, the column of
 implied path, and warns when they disagree by more than
 :data:`PATH_WARN_FRACTION`.
 
-Choice of tracer (``GEOMETRY.path_tracer``, ``config.keys.PATH_TRACERS``).
+The tracer is named by the path window, a ``*PATH`` section with
+``tracer : CH4`` (developer, 2026-11-18): that window's median gives the
+implied path, and every other window fitting the tracer is reported beside
+it as a cross-check.  The older ``GEOMETRY.path_tracer`` (deprecated) names
+the tracer alone; the window with the smallest fit error then gives the path.
+
+Choice of tracer (``config.keys.PATH_TRACERS``).
 Measured on the layer validation set (MIDAC, 418 spectra, 2026-11-15):
 
 - **CH4**, ν3 P-branch 2880-2990 cm⁻¹: 2.00 km, fit error 2.0% per spectrum,
@@ -131,8 +137,10 @@ class PathReport:
     windows : dict of str → WindowPath
         Every active window where the tracer is an ambient gas.
     best : str or None
-        The window with the smallest median relative fit error; ``None`` when
-        no window has :data:`_MIN_FITS` successful fits.
+        The window giving the implied path: the ``*PATH`` window when the
+        config has one, otherwise the one with the smallest median relative
+        fit error.  ``None`` when that window (with ``*PATH``) or every
+        window (without) has fewer than :data:`_MIN_FITS` successful fits.
     ambient : list of AmbientVMR
         Every fitted ambient gas of every window.
     atm_temp, atm_pres : float
@@ -146,6 +154,12 @@ class PathReport:
     ambient: list[AmbientVMR]
     atm_temp: float
     atm_pres: float
+    path_window: str | None = None
+
+    @property
+    def designated(self) -> bool:
+        """Whether the implied path comes from the ``*PATH`` window."""
+        return self.path_window is not None
 
     @property
     def path_km(self) -> float:
@@ -207,14 +221,19 @@ def tracer_report(table: ResultsTable, windows: dict, params: dict,
     params : dict
         ``ParameterSet`` per window label (for the tracer's reference column).
     geometry : LayerGeometry
-        The run geometry; ``path_tracer`` selects the tracer.
+        The run geometry: the path and the ambient state, and the deprecated
+        ``path_tracer`` when there is no ``*PATH`` window.
 
     Returns
     -------
     PathReport or None
-        ``None`` when ``path_tracer`` is unset (or the geometry has none).
+        ``None`` when there is neither an active ``*PATH`` window nor a
+        ``path_tracer``.
     """
-    tracer = getattr(geometry, "path_tracer", None)
+    path_win = next((w for w in windows.values() if getattr(w, "is_path", False)),
+                    None)
+    tracer = (path_win.tracer if path_win is not None
+              else getattr(geometry, "path_tracer", None))
     if tracer is None:
         return None
     L0, T0, P0 = geometry.pathlength, geometry.atm_temp, geometry.atm_pres
@@ -251,8 +270,16 @@ def tracer_report(table: ResultsTable, windows: dict, params: dict,
         per_window[label] = WindowPath(label, path.rename(COL_TRACER_PATH),
                                        float(np.nanmedian(rel)), gas, r)
 
-    best = (min(per_window, key=lambda k: per_window[k].rel_error)
-            if per_window else None)
+    if path_win is not None:
+        # Explicit: the path window or nothing, never another window
+        # quietly in its place (a weak window can carry a 53% fit error).
+        best = path_win.label if path_win.label in per_window else None
+        if best is None:
+            logger.warning("Path check: %s fitted in fewer than %d spectra of %s; "
+                           "no implied path", tracer, _MIN_FITS, path_win.label)
+    else:
+        best = (min(per_window, key=lambda k: per_window[k].rel_error)
+                if per_window else None)
     implied = per_window[best].median if best else float("nan")
 
     ambient = []
@@ -264,7 +291,8 @@ def tracer_report(table: ResultsTable, windows: dict, params: dict,
                                   if np.isfinite(implied) else float("nan")))
 
     report = PathReport(tracer, background if background is not None else float("nan"),
-                        L0, per_window, best, ambient, T0, P0)
+                        L0, per_window, best, ambient, T0, P0,
+                        path_win.label if path_win is not None else None)
     if best is not None and abs(report.ratio - 1.0) > PATH_WARN_FRACTION:
         logger.warning(
             "Path check: %s in %s implies a %.3f km path, %.2f× the configured "

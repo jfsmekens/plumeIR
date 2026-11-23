@@ -102,15 +102,15 @@ thickness `plume_thickness` somewhere along it, in front of a hot source.
 | `plume_thickness` | depth of plume along the path [km] | sets the plume's optical path; default 0.05 |
 | `atm_temp` | air temperature at collection [K] | **measure it**; see below |
 | `atm_pres` | air pressure at collection [mbar] | from a barometer, or from altitude |
-| `plume_temp` | best guess of the plume gas temperature [K] | the starting value when `gas_temp` is fitted |
+| `plume_temp` | best guess of the plume gas temperature [K] | the starting value when `plume_temp` is fitted |
 | `plume_pres` | plume pressure [mbar] | normally the same as `atm_pres` |
 | `source_temp` | source temperature [K] | a priori; default 1500 K |
-| `fit_gas_temp` | fit the plume temperature | usually in the SO2 window only (section 5.6) |
+| `fit_plume_temp` | fit the plume temperature | usually in the SO2 window only (section 5.6) |
 | `fit_atm_temp` | fit the ambient temperature | **usually False**; see below |
 | `fit_source_temp` | fit the source temperature | |
-| `model_gas_emission` | add the hot gas's own emission | **thermal-infrared windows only** (section 5.7) |
+| `model_plume_emission` | add the hot gas's own emission | **thermal-infrared windows only** (section 5.7) |
 | `no_gas` | not available in v3.0 | must be False |
-| `path_tracer` | `CH4` or `N2O`: a check on `pathlength` | optional; see below |
+| `path_tracer` | deprecated: use a `*PATH` section | see below |
 
 **Ambient temperature: measure it and keep it fixed.** `atm_temp` is the air
 temperature along the path, and a thermometer reading at collection is better
@@ -130,21 +130,31 @@ same if `pathlength` is wrong (measured with 1.22 km and 2.0 km: every median
 identical; rounding in the tables moves a few individual fits).
 What it sets is the reading of ambient columns as mixing ratios: the
 background of a fitted ambient gas, and a ratio's intercept read as a
-background. `path_tracer : CH4` checks it: after the fits, the ambient CH4
-column (well mixed at the `*DEFAULTS` `CH4_conc`, absent from volcanic plumes)
-gives the path, `summary.txt` reports it per window with the ambient VMRs and
-ratio intercepts at both paths, `results_wide.csv` gets a `tracer_path_km`
-column, and the log warns when it differs from `pathlength` by more than 20%.
-It needs CH4 as an ambient gas of an active window: the ν3 P-branch,
-2880-2990 cm⁻¹, gives about 2% per spectrum (section 9.1, `*FIT5`); the HCl
-window's weak CH4 lines about 5%. Set `CH4_conc` to the background of the
+background. A `*PATH` section checks it: a fit window like a `*FITn`, whose
+only purpose is the path, with `tracer : CH4` and no targets. After the fits,
+its ambient CH4 column (well mixed at the `*DEFAULTS` `CH4_conc`, absent from
+volcanic plumes) gives the path. `summary.txt` reports it, with every other
+window fitting CH4 beside it as a cross-check and the ambient VMRs and ratio
+intercepts at both paths; `results_wide.csv` gets a `tracer_path_km` column;
+the log warns when it differs from `pathlength` by more than 20%. The window
+is labelled `PATH` in the results, and the live display and the inspector
+show no fit panel for it. A config has at most one. The ν3 P-branch,
+2880-2990 cm⁻¹, gives about 2% per spectrum (section 9.1); the HCl window's
+weak CH4 lines about 5%. (The older `GEOMETRY.path_tracer : CH4` still
+works, with a deprecation warning: every window fitting the gas is reported
+and the one with the smallest fit error gives the path.) Set `CH4_conc` to the background of the
 site and year (about 1.93 ppmv in 2021 at northern mid-latitudes; the default
 is 1.9): the path scales inversely with it. Where CH4 is itself part of the
-scene (a seep, a mud volcano, a fire), use `N2O` in a 2540-2600 cm⁻¹ window
-instead; it follows the plume more, so trust its series median rather than
-single spectra. The tracer may not be a plume gas or a target.
+scene (a seep, a mud volcano, a fire), `N2O` in a 2540-2600 cm⁻¹ window is
+the alternative: on the layer test data its series median agrees with CH4's
+(1.996 against 2.003 km), but it follows the plume more, so trust the median
+rather than single spectra. **Not yet usable as shipped:** with `fov` fitted,
+that window usually lands in a wrong minimum (R² ≈ 0.6, `fov` far above the
+other windows', smeared lines); check the window's R² before reading its
+path. The tracer may not be a plume gas or a
+target.
 The `*GEOMETRY` flags apply to every window; a window can override them with
-its own `fit_atm_temp`, `fit_gas_temp` or `model_gas_emission` (section 5.6).
+its own `fit_atm_temp`, `fit_plume_temp` or `model_plume_emission` (section 5.6).
 
 ### 3.2 Emission geometry
 
@@ -160,9 +170,9 @@ space); the plume sits between them.
 | `plume_thickness` | plume thickness [km] | |
 | `atm_path` | RFM atmosphere profile, e.g. `mls.atm` | a name alone is looked for in RFM's `atm` folder |
 | `plume_temp` | leave unset | None = the ambient temperature at `plume_height`, read from the profile |
-| `fit_tplume` | leave False | a free plume temperature trades against the column; fitting it needs an explicit `plume_temp` |
-| `fit_tprox`, `dt_prox` | proximal-layer temperature offset (fitted by default) | |
-| `fit_tdist`, `dt_dist` | distal-layer temperature offset (fitted by default) | |
+| `fit_plume_temp` | leave False | a free plume temperature trades against the column; fitting it needs an explicit `plume_temp` |
+| `fit_dt_prox`, `dt_prox` | proximal-layer temperature offset (fitted by default) | |
+| `fit_dt_dist`, `dt_dist` | distal-layer temperature offset (fitted by default) | |
 | `h2o_scaling` | how many layers the shared water scaling applies to (0-3) | default 3 |
 | `model_aero_scattering` | add aerosol single scattering | default False |
 | `bb_drift`, `clear_drift` | correct blackbody and clear-sky drift over the series | default True |
@@ -200,7 +210,7 @@ to `preprocess.csv` and `summary.txt`, the fits unchanged) or `apply`.
 |---|---|---|
 | `background` | layer: the additive background of each single beam, from the bands the ambient path makes black: the self-emission scale `a` (the self file is ~16% too strong on the validation set) and a zero level per band | `apply` subtracts it instead of the self spectrum, without clipping. Flags: `a` outside 0.5-1.2, or a held-out band missed by > 1% of the continuum |
 | `reference_spectra` | layer: how many spectra, from the start of the series, make the reference for the relative scale | default 10. The scale `env_scale` is each spectrum's broadband level against that reference (fill fraction × emissivity × broadband attenuation such as aerosol) |
-| `registration` | layer and emission: the shift and scale of the wavenumber axis, by cross-correlation in sub-bands | `apply` corrects each spectrum's axis before the fits, with that spectrum's own shift and scale; `nu_shift` is still fitted and then holds only what is left (~0.01 cm⁻¹) |
+| `registration` | layer and emission: the shift and scale of the wavenumber axis, by cross-correlation in sub-bands | `apply` corrects each spectrum's axis before the fits, with that spectrum's own shift and scale; `shift` is still fitted and then holds only what is left (~0.01 cm⁻¹) |
 
 Whenever preprocessing runs, `preprocess.csv` also describes each spectrum:
 its top-hull peak, where it is and the integrated hull (`env_peak`,
@@ -261,6 +271,11 @@ Windows used for the validated results:
 | layer | 2020-2150 | CO, CO2 | ambient N2O, H2O, CO2 |
 | emission | 750-1250 | SO2, H2SO4_aq and ash aerosol | water and other atmospheric gases from the profile |
 
+List a gas only in windows where it has lines. N2O has none worth fitting
+in 2020-2150 or 750-1250 cm⁻¹: its fit error there exceeds its whole ambient
+column, so the example leaves it out of those windows (taking it out changed
+no target, every median ×1.0000).
+
 ### 5.2 Gases: `atm_gases` and `plume_gases`
 
 These two lists say **where a gas is**, which decides its path and
@@ -291,11 +306,20 @@ Each adds a mass column (named like the species) and an effective radius
 water, named `<ACID>_aq` so that no name is both a gas and an aerosol (gas
 `HNO3` exists, and `H2SO4` can be a gas); their mass column is the whole
 droplet, acid and water. `H2SO4_aq` also has a composition `wt_H2SO4_aq`
-(acid weight fraction), held fixed unless `fit_aero_composition` is True;
+(acid weight fraction), held fixed unless `fit_wt` is True;
 `HNO3_aq` is fixed at 50 wt% by its refractive index. The former names
 `H2SO4` and `HNO3` (as an aerosol) are still read, with a warning. Aerosols are broad features: use them in wide
 windows where their spectral shape is constrained (validated in the emission
 geometry, 750-1250 cm⁻¹).
+
+The layer example fits `WATER` beside `H2SO4_aq` in its 750-1250 cm⁻¹
+window, as v2 did, so its results compare with v2's. On the example data
+(418 spectra) the window's median R² rises from 0.9654 to 0.9779 and the
+H2SO4_aq/SO2 line moves towards the origin (intercept 1.36 → 0.19 g m⁻²),
+but the slope doubles (0.0063 → 0.0124) and the WATER column does not follow
+the plume (r −0.51 with SO2), with its radius at the 0.1 µm lower bound in
+89% of spectra: read it as a broad continuum term more than as a measured
+water cloud.
 
 ### 5.4 Outputs: `targets`
 
@@ -304,8 +328,8 @@ in `results_wide.csv`, the time series and the ratios.
 
 - A species can be a target in **one window only**; choose the window where
   it is best constrained.
-- Besides species, `gas_temp`, `atm_temp`, `source_temp`, `dt_prox`, `fov`,
-  `max_opd`, `nu_shift` and `offset` can be targets, to report them.
+- Besides species, `plume_temp`, `atm_temp`, `source_temp`, `dt_prox`, `fov`,
+  `max_opd`, `shift` and `offset` can be targets, to report them.
 - For a gas in both roles, `{GAS}_atm` (the ambient part) can be a target
   too.
 
@@ -338,22 +362,22 @@ every coefficient is well conditioned.
 
 ### 5.6 Temperatures per window
 
-`fit_gas_temp`, `fit_atm_temp` and `model_gas_emission` can be set per
+`fit_plume_temp`, `fit_atm_temp` and `model_plume_emission` can be set per
 window, overriding `*GEOMETRY` (leave them out to inherit). Likewise
-`fit_size_aero` and `fit_aero_composition` override `*RETRIEVAL` in one
+`fit_r0` and `fit_wt` override `*RETRIEVAL` in one
 window. Both take `True`, `False`, or a list of aerosols: only those named
 are fitted, the others held, e.g.
 
-    fit_size_aero        : ASH          # ash's radius fitted, the sulphate's held
-    fit_aero_composition : H2SO4_aq
+    fit_r0 : ASH          # ash's radius fitted, the sulphate's held
+    fit_wt : H2SO4_aq
 
 The emission data do not constrain the sulphate composition: hold it at a
 value set from temperature and humidity rather than fitting it.
 
 **`plume_temp_from : FIT0`** (layer only) holds this window's plume
 temperature at the value fitted in another window, spectrum by spectrum. The
-other window must come earlier in the file, be active, and fit `gas_temp`
-itself; this window must not fit `gas_temp`. Use it when one window
+other window must come earlier in the file, be active, and fit `plume_temp`
+itself; this window must not fit `plume_temp`. Use it when one window
 constrains the plume temperature well (typically SO2) and the others should
 use that value rather than fit their own. Windows that each fit their own
 temperature are allowed too, and often disagree with each other.
@@ -376,9 +400,9 @@ fitting it in one window at a time:
 So if `atm_temp` is fitted at all, fit it in the HCl window. Two cautions:
 
 - **Order.** A source must come earlier in the file. If the HCl window
-  receives `gas_temp` from the SO2 window and also supplies `atm_temp` to the
-  others, the order is: SO2 window first (fits `gas_temp`, keeps the measured
-  `atm_temp`), HCl window second (receives `gas_temp`, fits `atm_temp`), then
+  receives `plume_temp` from the SO2 window and also supplies `atm_temp` to the
+  others, the order is: SO2 window first (fits `plume_temp`, keeps the measured
+  `atm_temp`), HCl window second (receives `plume_temp`, fits `atm_temp`), then
   the rest (receive both). Two windows cannot each take a temperature
   from the other; plumeIR refuses the loop
   ("must come before"). Running the SO2 window at the measured `atm_temp`
@@ -397,7 +421,7 @@ So if `atm_temp` is fitted at all, fit it in the HCl window. Two cautions:
   window only as a check: compare its median with the value you configured.
   To pass it on instead, add `atm_temp_from : FIT1` to the later windows.
 
-### 5.7 Hot-gas emission: `model_gas_emission`
+### 5.7 Hot-gas emission: `model_plume_emission`
 
 Adds the plume gas's own thermal emission to the layer model. **Use it only in
 thermal-infrared windows** (roughly below 1400 cm⁻¹). At shorter wavelengths
@@ -425,12 +449,13 @@ in both roles, it applies to the ambient part.
 | `max_opd`, `apod_type` | **leave them out**: they are read from the data files. Set them only for files that do not record them (plumeIR warns and uses 1.8 cm and NB medium then) |
 | `fit_max_opd` | leave False |
 | `fit_fov`, `fov` | fit it (the default), starting at the instrument's nominal field of view in radians (about 0.030 for the Bruker and 0.021 for the MIDAC used in validation). It varies for physical reasons, e.g. with aerosol load; do not fix it to steady a fit |
-| `fit_shift`, `nu_shift` | fit the wavenumber shift (default) |
+| `fit_shift`, `shift` | fit the wavenumber shift (default) |
+| `broad_frac`, `broad_width`, `fit_broad_frac`, `fit_broad_width` | an optional broad component of the line shape: a fraction `broad_frac` of the light spread by a Gaussian of `broad_width` cm⁻¹. Leave it off (`broad_frac` 0) unless the instrument needs it: the sign is a fitted `fov` well above nominal and a residual that is the same in every gas, a core deeper and narrower than modelled with saturated cores not reaching zero (seen on an instrument with corroded mirrors). Then fit both once on a set of good spectra, in windows of isolated lines (not the SO2 band, where the width runs to its bound), and hold the median values for the runs |
 | `fit_offset`, `offset` | an additive offset; usually off |
 | `use_bounds` | keep True |
 | `update_params` | start each fit from the previous spectrum's result; serial runs only, so not with `--parallel` |
-| `fit_size_aero` | fit the aerosol radius (default True) |
-| `fit_aero_composition` | fit the H2SO4_aq weight fraction (default False) |
+| `fit_r0` | fit the aerosol radius (default True) |
+| `fit_wt` | fit the H2SO4_aq weight fraction (default False) |
 | `use_babs_aero` | has no effect in v3.0: the emission model always attenuates with aerosol extinction and emits with aerosol absorption |
 
 ---
@@ -483,7 +508,15 @@ fields `size`, `min_size`, `max_size` and the composition `comp`.
 default 25) was chosen by measurement: coarser grids bias the emission
 columns by several percent, finer ones cost proportionally more time for
 little gain. `model_padding` (cm⁻¹ on each side of a window) leaves room for
-the line shape. `cache_dir` is where computed references are kept (default
+the line shape. `plume_temp_step` and `atm_temp_step` (K, default 10 and 5)
+are the largest spacing between the temperature nodes of the plume and the
+ambient gas tables. A fitted or held temperature is interpolated linearly
+between nodes, and the error goes as the square of the spacing: at 10 K
+about 0.03% of the optical depth at the strongest lines, well below the
+fit errors of the target columns. A finer step costs table build time and
+disk space, not fit time; it matters most where two parts of one gas are
+separated by temperature alone (a gas in both `atm_gases` and
+`plume_gases`). `cache_dir` is where computed references are kept (default
 `~/.plumeIR/cache/`); they are reused whenever the inputs that define them
 match, so only the first run of a setup is slow.
 
@@ -491,132 +524,227 @@ match, so only the first run of a setup is slow.
 
 ## 9. Worked examples
 
-These are complete configs with illustrative values; replace every value
-marked in a comment with your own.
+These are the two shipped examples, `examples/layer.ini` and
+`examples/emission.ini`, in full (a test keeps them identical). Each key is
+described in [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md). For your own data,
+change at least `data_dir` and the `*GEOMETRY` values (path, temperatures
+and pressures measured at collection; heights and elevation for emission),
+and `fov` to your instrument's nominal field of view.
 
 ### 9.1 Layer
 
-Six windows, the plume temperature fitted once and passed to every other
-window, the ambient temperature held at the measured value everywhere and
-fitted in the HCl window only as a check (section 5.6), `polydeg : 2`
-everywhere to match v2's quadratic background, and a CH4 window that checks
-the path length (section 3.1).
+MIDAC spectra of a lava source. Five fit windows, the plume temperature
+fitted once in the SO2 window and passed to every other window
+(`plume_temp_from`), the ambient temperature held at the measured value
+everywhere and fitted in the HCl window only as a check (section 5.6),
+`polydeg : 2` everywhere to match v2's quadratic background, and a `*PATH`
+window whose ambient CH4 checks the path length (section 3.1).
+`pathlength : 2.0` is the path that check measured on these data; the first
+estimate was 1.22 km. The thermal-infrared window fits `WATER` beside
+`H2SO4_aq` as v2 did (section 5.3).
 
 ```
+# plumeIR config; every key is described in docs/CONFIG_REFERENCE.md
+
 *DATA
-data_dir      : ~/data/my_campaign       # your folder of spectra
-filter_ext    : spc                      # MIDAC files
-filter_files  : False                    # use every scene file in the folder
+data_dir             : ../data/2021-08-11
+filter_files         : False
+filter_ext           : spc
+
+*MODEL
+nperwn               : 25.0
+model_padding        : 50.0
+plume_temp_step      : 10.0
+atm_temp_step        : 5.0
 
 *GEOMETRY
-type          : layer
-pathlength    : 2.0                      # km, spectrometer to source
-                                         # (from the CH4 check; first estimate 1.22)
-plume_thickness : 0.05                   # km
-atm_temp      : 284                      # K, measured at collection
-atm_pres      : 973                      # mbar, measured at collection
-plume_temp    : 450                      # K, starting value
-plume_pres    : 973                      # mbar
-path_tracer   : CH4                      # check pathlength with *FIT5's CH4
+type                 : layer
+pathlength           : 2.0
+atm_temp             : 284.0
+atm_pres             : 973.0
+plume_temp           : 450.0
+plume_pres           : 973.0
+plume_thickness      : 0.05
+fit_plume_temp       : False
+fit_atm_temp         : False
+model_plume_emission : False
+fit_source_temp      : False
+source_temp          : 1500.0
+no_gas               : False
 
 *PREPROCESS
-subtract_self : True                     # needs a *self* spectrum in data_dir
+subtract_self        : True
+self_file            : None
+background           : report
+reference_spectra    : 10
+registration         : report
 
 *RETRIEVAL
-retrieval_method : nlls
-fov           : 0.021                    # rad, instrument nominal
+retrieval_method     : nlls
+use_bounds           : True
+update_params        : False
+fit_r0               : True
+use_babs_aero        : True
+fit_fov              : True
+fov                  : 0.021
+fit_max_opd          : False
+fit_shift            : True
+shift                : 0.0
+fit_offset           : False
+offset               : 0.0
 
-*FIT0
-fit           : True
-fit_window    : 2450, 2550
-atm_gases     : H2O, N2O, CH4
-plume_gases   : SO2
-targets       : SO2, gas_temp
-polydeg       : 2                        # quadratic (v2's "3")
-fit_gas_temp  : True                     # plume temperature fitted here only
-
-*FIT1
-fit           : True
-fit_window    : 2690, 2830
-atm_gases     : H2O, N2O, CH4
-plume_gases   : HCl
-targets       : HCl, atm_temp
-polydeg       : 2
-plume_temp_from : FIT0                   # plume temperature from FIT0
-fit_atm_temp  : True                     # a check on atm_temp; not passed on
-
-*FIT2
-fit           : True
-fit_window    : 750, 1250
-atm_gases     : H2O, CO2, N2O, CH4
-plume_gases   : SO2
-plume_aero    : H2SO4_aq
-targets       : H2SO4_aq
-polydeg       : 2
-plume_temp_from : FIT0
-
-*FIT3
-fit           : True
-fit_window    : 2020, 2150
-atm_gases     : N2O, H2O, CO2
-plume_gases   : CO
-targets       : CO, CO2, H2O
-polydeg       : 2
-plume_temp_from : FIT0                   # atm_temp stays at the measured value:
-                                         # never fit it where H2O is a target
-
-*FIT4
-fit           : True
-fit_window    : 4020, 4060
-atm_gases     : H2O
-plume_gases   : HF
-targets       : HF
-polydeg       : 2
-plume_temp_from : FIT0
-
-*FIT5
-fit           : True
-fit_window    : 2880, 2990                # CH4 ν3 P-branch: the path check
-atm_gases     : CH4, H2O, N2O
-plume_gases   : HCl                      # its R-branch lines are in the window
-polydeg       : 2
-plume_temp_from : FIT0
+*DEFAULTS
+so2_conc             : 2.0
+so2_max              : 5000.0
+h2so4_aq_size        : 1.0
+water_size           : 1.0
 
 *PLOT
-ratios        : HCl:SO2, CO2:SO2, H2O:SO2, HF:SO2, H2SO4_aq:SO2
-regression    : odr
-rh            : 65                       # % at collection, for the H2O background
+ratios               : HCl:SO2, CO2:SO2, H2O:SO2, HF:SO2, H2SO4_aq:SO2
+regression           : odr
+
+*FIT0
+fit                  : True
+plume_aero           : None
+polydeg              : 2
+fit_window           : 2450.0, 2550.0
+atm_gases            : H2O, N2O, CH4
+plume_gases          : SO2
+targets              : SO2, plume_temp
+fit_plume_temp       : True
+
+*FIT1
+fit                  : True
+plume_aero           : None
+polydeg              : 2
+fit_window           : 2690.0, 2830.0
+atm_gases            : H2O, N2O, CH4
+plume_gases          : HCl
+targets              : HCl, atm_temp
+plume_temp_from      : FIT0
+fit_atm_temp         : True
+
+*FIT2
+fit                  : True
+plume_aero           : H2SO4_aq, WATER
+polydeg              : 2
+fit_window           : 750.0, 1250.0
+atm_gases            : H2O, CO2, CH4
+plume_gases          : SO2
+targets              : H2SO4_aq, WATER
+plume_temp_from      : FIT0
+
+*FIT3
+fit                  : True
+plume_aero           : None
+polydeg              : 2
+fit_window           : 2020.0, 2150.0
+atm_gases            : H2O, CO2
+plume_gases          : CO
+targets              : CO, CO2, H2O
+plume_temp_from      : FIT0
+
+*FIT4
+fit                  : True
+plume_aero           : None
+polydeg              : 2
+fit_window           : 4020.0, 4060.0
+atm_gases            : H2O
+plume_gases          : HF
+targets              : HF
+plume_temp_from      : FIT0
+
+*PATH
+fit                  : True
+plume_aero           : None
+polydeg              : 2
+fit_window           : 2880.0, 2990.0
+atm_gases            : CH4, H2O, N2O
+plume_gases          : HCl
+tracer               : CH4
+plume_temp_from      : FIT0
 ```
 
 ### 9.2 Emission
 
+Bruker spectra of the sky, calibrated with the hot and cold blackbody
+files in `data_dir`: one window, 750-1250 cm⁻¹, with SO2, sulphate and ash.
+`max_spec : 300` keeps the run to the 300 spectra of its validation record;
+remove it to fit every spectrum.
+
 ```
+# plumeIR config; every key is described in docs/CONFIG_REFERENCE.md
+
 *DATA
-data_dir      : ~/data/my_sky_series     # spectra plus BBC / BBH / clear files
-filter_ext    : 0                        # Bruker files ending in .0
+data_dir             : ../data/2019-09-11
+filter_files         : True
+filter_string        : plume
+filter_ext           : 0
+max_spec             : 300
+
+*MODEL
+nperwn               : 25.0
+model_padding        : 50.0
+plume_temp_step      : 10.0
+atm_temp_step        : 5.0
+cache_dir            : None
 
 *GEOMETRY
-type          : emission
-elev          : 25                       # degrees above the horizon
-obs_height    : 0.4                      # km, your spectrometer's altitude
-plume_height  : 1.0                      # km
-plume_thickness : 0.4                    # km
-atm_path      : mls.atm                  # RFM profile
+type                 : emission
+plume_height         : 1.0
+plume_thickness      : 0.4
+elev                 : 25.0
+obs_height           : 0.2
+atm_path             : mls.atm
+plume_temp           : None
+fit_plume_temp       : False
+fit_dt_prox          : True
+dt_prox              : 0.0
+fit_dt_dist          : True
+dt_dist              : 0.0
+h2o_scaling          : 3
+fit_difference       : False
+use_bbt              : False
+bb_drift             : True
+clear_drift          : True
+model_aero_scattering : False
+
+*PREPROCESS
+subtract_self        : False
+registration         : report
 
 *RETRIEVAL
-retrieval_method : nlls
-fov           : 0.030                    # rad, instrument nominal
+retrieval_method     : nlls
+use_bounds           : True
+update_params        : False
+fit_r0               : True
+use_babs_aero        : True
+fit_fov              : True
+fov                  : 0.03
+fit_max_opd          : False
+fit_shift            : True
+shift                : 0.0
+fit_offset           : False
+offset               : 0.0
 
-*FIT0
-fit           : True
-fit_window    : 750, 1250
-atm_gases     : H2O, CO2, O3
-plume_gases   : SO2
-plume_aero    : H2SO4_aq, ASH
-targets       : SO2, H2SO4_aq, ASH
+*DEFAULTS
+so2_conc             : 2.0
+so2_max              : 5000.0
+h2so4_aq_size        : 1.0
+ash_size             : 1.0
 
 *PLOT
-ratios        : H2SO4_aq:SO2, ASH:SO2
+ratios               : H2SO4_aq:SO2, ASH:SO2
+
+*FIT0
+fit                  : True
+fit_window           : 750.0, 1250.0
+atm_gases            : H2O, CO2, N2O, CH4, O3
+plume_gases          : SO2
+plume_aero           : H2SO4_aq, ASH
+targets              : SO2, H2SO4_aq, ASH
+polydeg              : 3
+continuum            : H2O
 ```
 
 ---
@@ -643,7 +771,7 @@ ratios        : H2SO4_aq:SO2, ASH:SO2
 | "is a target in multiple windows" | the same species listed under `targets` in two windows |
 | A ratio is refused | one of its two species is not a target of an active window |
 | H2O/SO2 negative or implausible | `atm_temp` fitted in the window that targets H2O (section 3.1) |
-| A column that does not follow the others, in a mid-infrared window | `model_gas_emission` switched on outside the thermal infrared (section 5.7) |
-| Columns different from v2 | expected: v3 corrects v2's instrument line shape and other faults. On the layer validation data SO2 is 3% higher, HCl, CO and CO2 by much more; the CHANGELOG gives each change and its size |
+| A column that does not follow the others, in a mid-infrared window | `model_plume_emission` switched on outside the thermal infrared (section 5.7) |
+| Columns different from v2 | expected: v3 corrects v2's instrument line shape and other faults. On the layer validation data SO2 agrees within 1%, while HCl, CO and CO2 are 1.5-1.9 times v2's; the CHANGELOG gives each change and its size |
 | v2 config gives a different background | `polydeg` is now the degree: write v2's `3` as `2` (section 5.5) |
 | `fov` runs to a bound | `max_opd` set by hand to a wrong value; leave it out so it is read from the files |

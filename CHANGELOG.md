@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0 — unreleased (preview: 3.0.0rc5)
+## 3.0.0 — unreleased (preview: 3.0.0rc6)
 
 plumeIR v3 is a rewrite of v2, not an update of it: no file is carried over.
 v2 remains available at its tag (`v2.0`) in `jfsmekens/plumeIR`. This entry
@@ -10,6 +10,29 @@ the files, the forward models that replace v2's, and the default settings. The
 measured size of each change is given where it is known.
 
 ### Changes that move retrieved columns
+
+**Optional broad line-shape component** (`plumeIR/forward/ils.py`)
+
+- New `*RETRIEVAL` keys `broad_frac`, `broad_width`, `fit_broad_frac`,
+  `fit_broad_width`: a fraction of the line shape spread by a Gaussian, for
+  instruments whose lines have a broader base than a field-of-view box gives.
+  **Off by default; results without it are unchanged to the bit.** On a
+  MIDAC with corroded mirrors it lowered the fitted `fov` to that of a
+  second, sound MIDAC and raised the columns (HCl ×1.10, CO ×1.14, CO2
+  ×1.07); on the sound instrument it changed nothing. Fit it once per
+  instrument and hold it; do not fit it in the SO2 window.
+
+**Maximum OPD of single-sided MIDAC files** (`plumeIR/spectra/spectrum.py`)
+
+- The MIDAC interferograms are single-sided (`IGRAMSIDE Single` in the SPC
+  log), so the maximum OPD is nearly the whole record, not half of it:
+  (POINTS − (ZPD − SKIP POINTS)) / LWN = **2.058 cm**, where 1.037 cm was
+  read before. Bruker files record their acquisition mode (`AQM`): the
+  double-sided ones keep the halving (1.037 cm here), and a single-sided one
+  gives no value, so `max_opd` must be set in the config. On the layer
+  validation data the fitted `fov` comes off its lower bound and agrees
+  across windows (0.050-0.052), R² improves (CO window 0.98778 → 0.99201),
+  and the columns fall: SO2 ×0.981, HCl ×0.929, CO ×0.801, CO2 ×0.829.
 
 **Instrument line shape** (`plumeIR/forward/ils.py`)
 
@@ -54,14 +77,16 @@ measured size of each change is given where it is known.
   −0.72 after). Columns are unchanged (layer ×1.00000); fitted `fov` and
   `nu_shift` values differ from earlier runs and are not comparable with them.
 - *`max_opd` and `apod_type` come from the data files.* The maximum OPD is
-  half of `1/RES` (1.037 cm for both validation instruments). v2 configs
+  half of `1/RES` for a double-sided interferogram (1.037 cm for the
+  validation Bruker) and nearly the whole record for a single-sided one
+  (2.058 cm for the validation MIDAC; see the first entry above). v2 configs
   pinned it at 2.0 cm (Bruker) or 1.8 cm (MIDAC), and a fitted FOV absorbed
-  the error (85.6 mrad against a 30 mrad nominal). Correcting it moves HCl by
-  +12%, layer SO2 by +1.6% and emission SO2 by −2.6%.
+  the error (85.6 mrad against a 30 mrad nominal on the Bruker).
 
 Net effect on the layer validation dataset (418 spectra, `atm_temp` held at
-the measured 284 K), v3/v2: SO2 1.028, HCl 2.045, CO 2.109, CO2 1.762
-(re-recorded 2026-11-15). The remaining HCl, CO and CO2 factors have not been
+the measured 284 K), v3/v2: SO2 1.007, HCl 1.902, CO 1.691, CO2 1.465
+(re-recorded 2026-11-21 with the MIDAC maximum OPD, and 2026-11-23 with the
+10 K plume temperature axis). The remaining HCl, CO and CO2 factors have not been
 explained.
 
 **Emission geometry**
@@ -164,6 +189,10 @@ explained.
 - A live display of fits, column time series and gas-ratio regressions
   (`--plot`), saved figures (`--save-plots`), and an inspector for finished
   runs (`--inspect`).
+- `plumeIR analyse --exclude SPECIES ...` leaves species out of the
+  composition (e.g. WATER on the layer example, which falls as the plume
+  rises). The composition donut no longer fails on a negative fraction: the
+  species is named under it instead of drawn.
 - A composition analysis of finished runs (`plumeIR analyse RUN_FOLDER`, or
   `--analyse` at the end of a run). It gives each species' ratio against a
   reference gas three ways: the run's regression line, a pooled ratio with a
@@ -195,16 +224,38 @@ explained.
 - Each run records the plumeIR, rfmwrapper and mieEODG versions and git
   commits.
 - A start-up check for RFM that stops with instructions.
-- Layer: a check on the path length (`path_tracer : CH4` or `N2O`). After
-  the fits, the ambient column of a well-mixed gas gives the path; the summary
-  reports it per window, with ambient mixing ratios and ratio intercepts at
-  both paths, `results_wide.csv` gains `tracer_path_km`, and the log warns
-  when it is more than 20% off `pathlength`. It changes no fit: no plume
-  column depends on the path. The layer example has a CH4 window
-  (2880-2990 cm⁻¹) for it; on the example data it gives 2.00 km against the
-  first estimate of 1.22 km, and the example now uses 2.0 km.
+- Layer: a check on the path length, the `*PATH` section: a fit window with
+  `tracer : CH4` (or `N2O`) and no targets, labelled `PATH` in the results.
+  After the fits, the tracer's ambient column gives the path; the summary
+  reports it, with every other window fitting the tracer as a cross-check and
+  ambient mixing ratios and ratio intercepts at both paths, `results_wide.csv`
+  gains `tracer_path_km`, and the log warns when it is more than 20% off
+  `pathlength`. It changes no fit: no plume column depends on the path. The
+  live display and the inspector show no fit panel for the path window. The
+  layer example has one (2880-2990 cm⁻¹); on the example data it gives
+  2.00 km against the first estimate of 1.22 km, and the example now uses
+  2.0 km. `GEOMETRY.path_tracer`, its first form (rc4-rc5), still works with
+  a deprecation warning.
+- The layer example fits `WATER` beside `H2SO4_aq` in its thermal-infrared
+  window, as v2 did (docs/CONFIG_GUIDE.md section 5.3 has its effect).
+- Configs are written with values only: one header line pointing to
+  `docs/CONFIG_REFERENCE.md`, then `key : value` lines. Run folders'
+  `config.ini` and the examples no longer repeat each key's description; the
+  reference has it. Older commented configs read as before.
+- The time series is scaled to each series' range, `(y − min)/(max − min)`,
+  instead of v2's `y / max`, so a series with a large background (H2O, CO2)
+  is no longer squashed against the top; the legend gives both ends.
 
 ### Config changes
+
+- **The temperature spacing of the gas tables is a setting**:
+  `*MODEL plume_temp_step` (default 10 K) and `atm_temp_step` (default 5 K),
+  the largest gap between temperature nodes. Interpolating between nodes errs
+  as the square of the gap; at 10 K that is about 0.03% of the optical depth
+  at the strongest lines and below 0.003% in a target column. A finer step
+  costs table build time and disk space, not fit time. The layer plume axis
+  goes from 25 nodes (29 K apart) to 71: layer SO2 ×0.999, other columns
+  unchanged; emission unchanged.
 
 - **Acid aerosols are `H2SO4_aq` and `HNO3_aq`** (were `H2SO4`, `HNO3`), with
   their parameters `r0_H2SO4_aq`, `wt_H2SO4_aq`. They are binary solutions
@@ -213,6 +264,25 @@ explained.
   `targets`, `*DEFAULTS` fields, `sigma_prior_` keys, `*PLOT` ratios), and
   old run folders load with their results renamed; `HNO3` as a gas keeps its
   name.
+
+- **Fit flags are `fit_<parameter>`, and plume quantities are named
+  `plume…` in every geometry.** The layer plume temperature `gas_temp` is
+  `plume_temp`, the name emission already used, and its self-emission
+  temperature `gasE_temp` is `plumeE_temp`; the wavenumber shift `nu_shift` is
+  `shift`. Renamed keys:
+
+  | was | is |
+  |---|---|
+  | `fit_gas_temp` (layer), `fit_tplume` (emission) | `fit_plume_temp` |
+  | `model_gas_emission` | `model_plume_emission` |
+  | `fit_tprox`, `fit_tdist` | `fit_dt_prox`, `fit_dt_dist` |
+  | `fit_size_aero` | `fit_r0` |
+  | `fit_aero_composition` | `fit_wt` |
+  | `nu_shift` | `shift` (`fit_shift` keeps its name) |
+
+  Old configs are read with one warning listing each rename (keys in any
+  section, `targets`, `sigma_prior_` keys); old run folders load with their
+  parameters renamed. Results are unchanged.
 
 - **Every key is in one catalogue**, `plumeIR/config/keys.py`, with its type,
   unit, default, limits and geometries. The reference
@@ -264,6 +334,10 @@ explained.
   from a brightness temperature.
 - SiF4: no adequate high-resolution cross-section exists.
 - Excel output (CSV only).
+- v2's sulphate acidity lookup (`plumeIR.reference.h2so4_acidity` in the
+  previews): its table was not v2's data, and nothing used it. The
+  sulphate weight fraction stays a held value (`*DEFAULTS`
+  `H2SO4_aq_comp`), since the spectra do not constrain it.
 - RFM inside the repository. RFM is obtained from its author (README, "Setting
   up RFM"). The v2 public history that carried it was purged on 2026-08-16.
 - Dependencies: PyMieScatt (replaced by mieEODG), scikit-learn, jcamp,

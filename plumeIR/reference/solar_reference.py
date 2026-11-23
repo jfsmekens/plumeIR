@@ -233,7 +233,9 @@ def build_solar_reference(
                                       temp=plume_temp, pres=plume_pres)
             gas_luts[species] = GasLUT.load_or_compute(
                 species=species, wn_start=wn_start, wn_stop=wn_stop, nperwn=nperwn,
-                temp_nodes=plume_temp_nodes_for(geometry, plume_temp), pathlength=plume_thickness,
+                temp_nodes=plume_temp_nodes_for(geometry, plume_temp,
+                                                step=model.plume_temp_step),
+                pathlength=plume_thickness,
                 pres=plume_pres, ref_scd=float(ref_scd),
                 continuum=species in window.continuum_gases,
                 cache_dir=cache_dir, recompute=recompute,

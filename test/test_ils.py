@@ -96,7 +96,7 @@ class TestFovOnlyBroadens:
     """
     Convention A (2026-11-16): the kernel models the FOV's broadening only;
     its displacement of line centres (ν·fov²/16) is left to the wavenumber
-    registration and ``nu_shift``.  Before that the shift was in the kernel,
+    registration and ``shift``.  Before that the shift was in the kernel,
     first by interpolation, which smoothed it by an amount set by its
     fractional part so that fitted fov snapped to whole-sample shifts (0.0175
     rad and the 0.001 bound in the layer CO window), then exactly by a phase
@@ -152,7 +152,7 @@ class TestFovSmoothness:
         The kernel must respond to a fov perturbation the size least_squares
         actually uses.  The old integer-boxcar implementation returned a
         BITWISE IDENTICAL kernel here — the width contributed exactly zero to
-        the Jacobian, leaving fov degenerate with nu_shift.
+        the Jacobian, leaving fov degenerate with shift.
         """
         step = LSQ_REL_STEP * FOV                      # ~6.7e-10
         base = build(fov=FOV).kernel
@@ -442,7 +442,7 @@ class TestCentring:
     ``n_tot // 2`` against a ``linspace`` grid (zero at ``(n_tot-1)/2``) left it
     off by half a sample for even ``n_tot`` and a full sample for odd — and
     ``n_tot = nper_wn**2`` is odd exactly when ``nper_wn`` is.  A free
-    ``nu_shift`` hid it in the fits, but it cost four of fifty emission spectra
+    ``shift`` hid it in the fits, but it cost four of fifty emission spectra
     at ``nper_wn = 25``.
     """
 
@@ -547,3 +547,70 @@ class TestValidation:
     def test_unknown_apodization_raises(self):
         with pytest.raises(PlumeIRError, match="Unknown apod_type"):
             build(apod_type="Bartlett")
+
+
+# =============================================================================
+# Broad line-shape component (2026-11-23)
+# =============================================================================
+
+class TestBroadComponent:
+    """
+    ``broad_frac`` / ``broad_width``: a fraction of the line shape convolved
+    with a Gaussian, applied as a factor on the interferogram.  Built for the
+    IMO MIDAC, whose line shape a uniform FOV box cannot describe (scattering
+    off corroded mirrors; CHANGELOG, "Optional broad line-shape component").
+    """
+
+    KW = dict(fov=0.05, max_opd=2.058, nper_wn=25, wn_center=2760.0,
+              apod_type="triangle", trim_fov=0.2)
+
+    def test_off_is_bit_identical(self):
+        a = make_ils(**self.KW)
+        b = make_ils(**self.KW, broad_frac=0.0, broad_width=0.7)
+        assert np.array_equal(a.kernel, b.kernel)
+        assert np.array_equal(a.wn_grid, b.wn_grid)
+
+    def test_equals_explicit_convolution_with_a_gaussian(self):
+        from scipy.signal import fftconvolve
+        f, s = 0.4, 0.6
+        b = make_ils(**self.KW, broad_frac=f, broad_width=s, trim_broad_width=2.0)
+        # the plain line shape on the same (wider) support
+        plain = make_ils(**self.KW, broad_frac=0.0, trim_broad_width=2.0)
+        g = np.exp(-0.5 * (plain.wn_grid / s) ** 2)
+        explicit = (1 - f) * plain.kernel + f * fftconvolve(plain.kernel, g / g.sum(),
+                                                            mode="same")
+        assert np.abs(b.kernel - explicit).max() < 1e-5 * b.kernel.max()
+        assert b.kernel.sum() == pytest.approx(1.0)
+
+    def test_length_fixed_by_the_width_trim(self):
+        """A fitted width does not change the kernel length (no Jacobian steps)."""
+        sizes = {make_ils(**self.KW, broad_frac=0.3, broad_width=w,
+                          trim_broad_width=5.0).kernel.size for w in (0.1, 0.8, 2.0, 5.0)}
+        assert len(sizes) == 1
+
+    def test_broadens_the_line(self):
+        a = make_ils(**self.KW, broad_frac=0.0, trim_broad_width=1.0)
+        b = make_ils(**self.KW, broad_frac=0.5, broad_width=1.0, trim_broad_width=1.0)
+        assert b.kernel.max() < a.kernel.max()
+        second = lambda k: float(np.sum(k.kernel * k.wn_grid ** 2))
+        assert second(b) == pytest.approx(second(a) + 0.5 * 1.0 ** 2, rel=0.02)
+
+    @pytest.mark.parametrize("kw", [dict(broad_frac=-0.1), dict(broad_frac=1.1),
+                                    dict(broad_frac=0.2, broad_width=-1.0)])
+    def test_rejects_bad_values(self, kw):
+        with pytest.raises(PlumeIRError):
+            make_ils(**self.KW, **kw)
+
+    def test_kernel_args_from_fitted_and_held(self):
+        from types import SimpleNamespace
+        from plumeIR.forward.ils import broad_kernel_args
+        from plumeIR.parameters.parameter import Parameter, ParameterKind, ParameterSet
+        retr = SimpleNamespace(broad_frac=0.3, broad_width=0.7)
+        held = broad_kernel_args({}, ParameterSet([]), retr)
+        assert held == dict(broad_frac=0.3, broad_width=0.7, trim_broad_width=None)
+        ps = ParameterSet([Parameter("broad_width", 0.5, True, (0.05, 5.0),
+                                     ParameterKind.SPECTRAL)])
+        fitted = broad_kernel_args({"broad_width": 0.9}, ps, retr)
+        assert fitted == dict(broad_frac=0.3, broad_width=0.9, trim_broad_width=5.0)
+        # a stand-in retrieval without the fields means "off"
+        assert broad_kernel_args({}, ParameterSet([]), SimpleNamespace())["broad_frac"] == 0.0

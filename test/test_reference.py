@@ -1,5 +1,5 @@
 """
-Tests for plumeIR.reference — GasLUT, AerosolLUT, acidity, Reference.
+Tests for plumeIR.reference — GasLUT, AerosolLUT, Reference.
 
 GasLUT.compute() and AerosolLUT.build_*() require RFM / mieEODG and are
 not tested here.  These tests cover:
@@ -7,7 +7,6 @@ not tested here.  These tests cover:
   - GasLUT save / load round-trip
   - GasLUT cache key uniqueness
   - AerosolLUT query interpolation (1-D and 2-D) with synthetic tables
-  - h2so4_acidity lookup
   - Reference dataclass construction
 
 Run with:  pytest test/test_reference.py -v
@@ -27,7 +26,6 @@ from plumeIR.reference.gas_lut import (
 )
 from plumeIR.reference.aero_lut import AerosolLUT
 from plumeIR.reference.atm_lut import AtmLayerLUT, derive_t_eff
-from plumeIR.reference.acidity import h2so4_acidity
 from plumeIR.reference.reference import Reference
 from plumeIR.physics import rad, bbt
 from plumeIR.config.objects import GeometryType
@@ -791,34 +789,6 @@ class TestLevDecomposition:
                                       0.5, 1.5, 2.5)
         assert np.allclose(layers["prox"][0], OD["prox"], atol=1e-12)
         assert np.allclose(layers["dist"][1], L["dist"], atol=1e-10)
-
-
-# =============================================================================
-# Acidity
-# =============================================================================
-
-class TestAcidity:
-
-    def test_returns_float(self):
-        wf = h2so4_acidity(1e-3, 300.0)
-        assert isinstance(wf, float)
-
-    def test_in_valid_range(self):
-        for t in [200, 250, 300]:
-            wf = h2so4_acidity(1e-3, float(t))
-            assert 0.05 <= wf <= 0.98
-
-    def test_lower_pres_higher_acidity(self):
-        # Less water → more concentrated H2SO4
-        wf_dry = h2so4_acidity(1e-5, 250.0)
-        wf_wet = h2so4_acidity(1e-2, 250.0)
-        assert wf_dry > wf_wet
-
-    def test_lower_temp_higher_acidity(self):
-        # Colder → more concentrated
-        wf_cold = h2so4_acidity(1e-3, 200.0)
-        wf_warm = h2so4_acidity(1e-3, 280.0)
-        assert wf_cold > wf_warm
 
 
 # =============================================================================

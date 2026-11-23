@@ -21,7 +21,8 @@ import logging
 from pathlib import Path
 
 from plumeIR.config.keys import (
-    ALL, DEFAULTS_FIELDS, GEOMETRIES, KEYS, Key, lookup, match_pattern, section_keys,
+    ALL, DEFAULTS_FIELDS, GEOMETRIES, KEYS, PATH_SECTION, PATH_TRACERS, Key, lookup,
+    match_pattern, section_keys,
     species_kind, split_species_field,
 )
 from plumeIR.config.objects import DUAL_ATM_SUFFIX
@@ -34,9 +35,9 @@ __all__ = ["validate", "parse_ratio", "split_species_field"]
 
 # Targets may include species names or diagnostic parameter names
 _VALID_TARGET_EXTRAS = {
-    "gas_temp", "atm_temp", "source_temp",
+    "plume_temp", "atm_temp", "source_temp",
     "dt_prox",
-    "fov", "max_opd", "nu_shift", "offset",
+    "fov", "max_opd", "shift", "offset",
 }
 
 
@@ -248,7 +249,7 @@ def _as_list(value: object) -> list:
 
 def _warn_aerosol_switches(fit: dict, retrieval: dict) -> None:
     """
-    Warn when ``fit_size_aero`` / ``fit_aero_composition`` name an aerosol
+    Warn when ``fit_r0`` / ``fit_wt`` name an aerosol
     the window does not have (the name has no effect there), or ask for a
     composition fit of an aerosol without a composition parameter (only
     ``H2SO4_aq`` has one).  A ``*RETRIEVAL`` list naming an aerosol of no
@@ -257,7 +258,7 @@ def _warn_aerosol_switches(fit: dict, retrieval: dict) -> None:
     from plumeIR import species as _species
     label = fit.get("_label", "FIT?")
     aero = set(_as_list(fit.get("plume_aero")))
-    for key in ("fit_size_aero", "fit_aero_composition"):
+    for key in ("fit_r0", "fit_wt"):
         value = fit.get(key)
         source = label
         if value is None:
@@ -269,7 +270,7 @@ def _warn_aerosol_switches(fit: dict, retrieval: dict) -> None:
         if absent and source == label:
             logger.warning("%s.%s names %s, not in this window's plume_aero: no effect",
                            label, key, absent)
-        if key == "fit_aero_composition":
+        if key == "fit_wt":
             no_comp = [n for n in names if n in aero and _species.is_aerosol(n)
                        and not any(c.parameter for c in _species.get(n).components)]
             if no_comp:
@@ -326,7 +327,7 @@ def _warn_atm_temp_with_h2o(fit: dict, geom: dict, gtype: str,
 
 #: Staged temperatures: config key -> (parameter it passes, the flag that fits it).
 _TEMP_FROM: dict[str, tuple[str, str]] = {
-    "plume_temp_from": ("gas_temp", "fit_gas_temp"),
+    "plume_temp_from": ("plume_temp", "fit_plume_temp"),
     "atm_temp_from":   ("atm_temp", "fit_atm_temp"),
 }
 
@@ -341,7 +342,7 @@ def _check_temp_from(errors: list[str], fits: list[dict], gtype: str,
     first for each spectrum; it must fit the temperature itself (its own flag,
     or the GEOMETRY one it inherits) and must not receive one in turn.  A
     receiving window may not ask to fit that temperature explicitly: the two
-    contradict each other.  Layer geometry only, the one with ``gas_temp`` and
+    contradict each other.  Layer geometry only, the one with ``plume_temp`` and
     ``atm_temp``.
 
     Parameters
@@ -398,16 +399,66 @@ def _check_temp_from(errors: list[str], fits: list[dict], gtype: str,
 def _check_path_tracer(errors: list[str], fits: list[dict], geom: dict,
                        gtype: str) -> None:
     """
-    ``path_tracer`` must be an ambient-only, non-target gas of an active window.
+    The path window (``*PATH``) and the tracer it measures with.
 
-    Its column measures the path only if it is the well-mixed background:
-    a tracer that is also a plume gas (dual) or a target is a variable of the
-    scene (a seep, a fire), not a reference.  Layer only (the catalogue
-    rejects it elsewhere).
+    ``*PATH`` (developer, 2026-11-18) is a fit window whose only purpose is the
+    path diagnostic: at most one, layer only, with a ``tracer`` (required, and
+    allowed in no other window) that is one of its ``atm_gases``, and no
+    targets.  The tracer measures the path only if it is the well-mixed
+    background: a tracer that is also a plume gas (dual) or a target in any
+    active window is a variable of the scene (a seep, a fire), not a
+    reference.
+
+    ``GEOMETRY.path_tracer``, the older form, is deprecated: alone it keeps
+    its meaning (every active window fitting the gas, the one with the
+    smallest fit error giving the path); beside ``*PATH`` it must name the
+    same gas.
     """
-    tracer = geom.get("path_tracer")
-    if tracer is None or gtype != "layer":
+    paths = [f for f in fits if f.get("_label") == PATH_SECTION]
+    for f in fits:
+        if f.get("_label") != PATH_SECTION and f.get("tracer") is not None:
+            _e(errors, f"{f.get('_label', 'FIT?')}.tracer: only the *PATH "
+               f"window takes a tracer; move this window to a *PATH section")
+    if len(paths) > 1:
+        _e(errors, f"{len(paths)} *PATH sections; a config has at most one")
+    if paths and gtype != "layer":
+        _e(errors, f"*PATH: the path window is layer only (geometry "
+           f"'{gtype or '?'}')")
         return
+
+    legacy = geom.get("path_tracer")
+    path = paths[0] if paths else None
+    if path is not None:
+        tracer = path.get("tracer")
+        if tracer is None:
+            _e(errors, "PATH.tracer: required in the *PATH section "
+               f"(one of {', '.join(PATH_TRACERS)})")
+            return
+        if legacy is not None and legacy != tracer:
+            _e(errors, f"GEOMETRY.path_tracer '{legacy}' and PATH.tracer "
+               f"'{tracer}' disagree; remove GEOMETRY.path_tracer (deprecated)")
+        elif legacy is not None:
+            logger.warning("GEOMETRY.path_tracer is deprecated and redundant "
+                           "beside *PATH; remove it")
+        if _as_list(path.get("targets")):
+            _e(errors, "PATH.targets: the path window has no targets (it is a "
+               "diagnostic); fit a target in a *FITn window")
+        if tracer not in _as_list(path.get("atm_gases")):
+            _e(errors, f"PATH.tracer: '{tracer}' must be one of the window's "
+               f"atm_gases (for CH4, the ν3 P-branch 2880-2990 cm⁻¹ is the "
+               f"precise choice)")
+        if path.get("fit") is not True:
+            logger.warning("*PATH has fit=False: no path diagnostic this run")
+            return
+        where = "PATH.tracer"
+    else:
+        tracer = legacy
+        if tracer is None or gtype != "layer":
+            return
+        logger.warning("GEOMETRY.path_tracer is deprecated: give the tracer's "
+                       "window a *PATH section with tracer: %s instead", tracer)
+        where = "GEOMETRY.path_tracer"
+
     active = [f for f in fits if f.get("fit") is True]
     ambient = [f.get("_label", "FIT?") for f in active
                if tracer in _as_list(f.get("atm_gases"))]
@@ -416,14 +467,14 @@ def _check_path_tracer(errors: list[str], fits: list[dict], geom: dict,
     target = [f.get("_label", "FIT?") for f in active
               if tracer in _as_list(f.get("targets"))]
     if not ambient:
-        _e(errors, f"GEOMETRY.path_tracer: '{tracer}' is not an atm_gas of any "
+        _e(errors, f"{where}: '{tracer}' is not an atm_gas of any "
            f"active window; add it to one (for CH4, the ν3 P-branch "
            f"2880-2990 cm⁻¹ is the precise choice)")
     if plume:
-        _e(errors, f"GEOMETRY.path_tracer: '{tracer}' is a plume gas in "
+        _e(errors, f"{where}: '{tracer}' is a plume gas in "
            f"{plume}; a tracer must be the ambient background only")
     if target:
-        _e(errors, f"GEOMETRY.path_tracer: '{tracer}' is a target in {target}; "
+        _e(errors, f"{where}: '{tracer}' is a target in {target}; "
            f"a tracer must not be a quantity of interest (choose another, "
            f"e.g. N2O when CH4 is a target)")
 
@@ -460,6 +511,14 @@ def validate(raw: dict) -> None:
     if known is not None:
         _check_section(errors, geom, "GEOMETRY", "GEOMETRY", known)
     _check_defaults(errors, raw.get("DEFAULTS", {}))
+
+    # A fitted width with the fraction held at 0 has nothing to act on.
+    retr = raw.get("RETRIEVAL", {}) or {}
+    if (retr.get("fit_broad_width") is True and retr.get("fit_broad_frac") is not True
+            and not (retr.get("broad_frac") or 0) > 0):
+        _e(errors, "RETRIEVAL.fit_broad_width: the broad line-shape component is "
+           "off (broad_frac 0, not fitted), so its width cannot be fitted. Set "
+           "broad_frac > 0 or fit_broad_frac: True")
 
     # The no-plume reference path (TransmittanceForwardModel) is
     # deferred to after v3.0: neither the reference spectrum's discovery

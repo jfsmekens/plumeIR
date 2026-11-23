@@ -294,7 +294,7 @@ class TestParameterSet:
             Parameter("H2O",      1e4,  True,  (0., 4e4),   ParameterKind.GAS_ATM,    ref_column=1e4),
             Parameter("SO2",      2.0,  True,  (0., 5000.), ParameterKind.GAS_PLUME,  ref_column=2.0),
             Parameter("fov",      0.02, True,  (0.001, 0.2),ParameterKind.SPECTRAL),
-            Parameter("nu_shift", 0.0,  False, (-2., 2.),   ParameterKind.SPECTRAL),
+            Parameter("shift", 0.0,  False, (-2., 2.),   ParameterKind.SPECTRAL),
         ])
 
     def test_len(self):
@@ -329,9 +329,9 @@ class TestParameterSet:
     def test_p0_vector_only_varied(self):
         ps = self._make_params()
         p0 = ps.p0_vector()
-        # nu_shift has vary=False → excluded
+        # shift has vary=False → excluded
         assert len(p0) == 5
-        assert "nu_shift" not in ps.varied_names()
+        assert "shift" not in ps.varied_names()
 
     def test_bounds_tuple_shape(self):
         ps = self._make_params()
@@ -349,8 +349,8 @@ class TestParameterSet:
     def test_unpack_includes_fixed(self):
         ps = self._make_params()
         d  = ps.unpack(ps.p0_vector())
-        assert "nu_shift" in d
-        assert d["nu_shift"] == pytest.approx(0.0)
+        assert "shift" in d
+        assert d["shift"] == pytest.approx(0.0)
 
     def test_unpack_wrong_length(self):
         ps = self._make_params()
@@ -426,14 +426,14 @@ class TestBuilder:
         assert so2.ref_column == pytest.approx(base_ref * 99.0 / 2.0, rel=1e-6)
 
     def test_per_window_fit_gas_temp_override(self, tmp_path):
-        # Geometry says fit_gas_temp=False; FIT0 overrides to True
-        cfg_text = _minimal_layer_config(extra_fit="fit_gas_temp : True")
+        # Geometry says fit_plume_temp=False; FIT0 overrides to True
+        cfg_text = _minimal_layer_config(extra_fit="fit_plume_temp : True")
         cfg_path = tmp_path / "test.ini"
         cfg_path.write_text(cfg_text)
 
         result = build_from_config(cfg_path)
         ps = result["params"][0]
-        assert "gas_temp" in ps
+        assert "plume_temp" in ps
 
     # --- Scaling-factor convention ---
 
@@ -479,15 +479,15 @@ class TestBuilder:
         assert math.isinf(h2o.bounds[1])
 
     def test_temp_bounds_from_lut_nodes(self, tmp_path):
-        # gas_temp / atm_temp bounds come from node ranges, NOT TEMP_DEFAULTS
+        # plume_temp / atm_temp bounds come from node ranges, NOT TEMP_DEFAULTS
         from plumeIR.standards import PLUME_TEMP_NODES, ATM_TEMP_NODES
         cfg_text = _minimal_layer_config(
-            extra_geom="fit_gas_temp : True\nfit_atm_temp : True"
+            extra_geom="fit_plume_temp : True\nfit_atm_temp : True"
         )
         cfg_path = tmp_path / "t.ini"
         cfg_path.write_text(cfg_text)
         ps = build_from_config(cfg_path)["params"][0]
-        assert ps["gas_temp"].bounds == (
+        assert ps["plume_temp"].bounds == (
             pytest.approx(PLUME_TEMP_NODES[0]), pytest.approx(PLUME_TEMP_NODES[-1])
         )
         assert ps["atm_temp"].bounds == (
@@ -496,21 +496,56 @@ class TestBuilder:
 
     def test_only_layer_uses_the_hot_gas_axis(self):
         """
-        Layer plume LUTs keep the original 300-1000 K axis, unchanged; solar
-        does not use it (a high-altitude occultation plume is cold).
+        Layer plume LUTs use the 300-1000 K axis (10 K apart by default since
+        2026-11-21, was 25 nodes); solar does not use it (a high-altitude
+        occultation plume is cold).
         """
         from types import SimpleNamespace
         from plumeIR.standards import (EMISSION_PLUME_TEMP_NODES,
                                        PLUME_TEMP_NODES, plume_temp_nodes_for)
-        assert np.allclose(PLUME_TEMP_NODES, np.linspace(300.0, 1000.0, 25))
-        layer = SimpleNamespace(plume_temp=450.0, fit_gas_temp=False)
+        assert np.allclose(PLUME_TEMP_NODES, np.arange(300.0, 1000.1, 10.0))
+        # Recognised by type, not by a field: since the 2026-11-19 rename every
+        # geometry with a plume temperature has fit_plume_temp.
+        layer = LayerGeometry(pathlength=1.0, atm_temp=284.0, atm_pres=973.0,
+                              plume_pres=973.0, plume_temp=450.0)
         assert np.array_equal(plume_temp_nodes_for(layer), PLUME_TEMP_NODES)
+        not_layer = SimpleNamespace(plume_temp=450.0, fit_plume_temp=False)
+        assert not np.array_equal(plume_temp_nodes_for(not_layer), PLUME_TEMP_NODES)
 
         solar = SimpleNamespace(plume_temp=None)           # no layer-only fields
         assert np.array_equal(plume_temp_nodes_for(solar), EMISSION_PLUME_TEMP_NODES)
         # the temperature the solar reference resolved from the profile counts
         cold = plume_temp_nodes_for(solar, plume_temp=205.0)
         assert cold[0] <= 205.0 <= cold[-1]
+
+    def test_temperature_axes_follow_the_model_steps(self, tmp_path):
+        """*MODEL plume_temp_step / atm_temp_step set the node spacing (2026-11-21)."""
+        from types import SimpleNamespace
+        from plumeIR.standards import (atm_temp_nodes, plume_temp_nodes_for,
+                                       temp_axis)
+        layer = LayerGeometry(pathlength=1.0, atm_temp=284.0, atm_pres=973.0,
+                              plume_pres=973.0, plume_temp=450.0)
+        five = plume_temp_nodes_for(layer, step=5.0)
+        assert five[0] == 300.0 and five[-1] == 1000.0 and np.allclose(np.diff(five), 5.0)
+        assert np.allclose(np.diff(atm_temp_nodes(2.5)), 2.5)
+        # a step that does not divide the range: evenly spaced, never coarser
+        odd = temp_axis(300.0, 1000.0, 30.0)
+        assert odd[0] == 300.0 and odd[-1] == 1000.0 and np.diff(odd).max() <= 30.0
+        assert odd.size == 25
+        # emission: the default range and its widening follow the step
+        em = plume_temp_nodes_for(SimpleNamespace(plume_temp=289.7, fit_plume_temp=False),
+                                  step=5.0)
+        assert em[0] == 220.0 and em[-1] == 400.0 and np.allclose(np.diff(em), 5.0)
+        with pytest.raises(ValueError):
+            temp_axis(300.0, 1000.0, 0.0)
+
+    def test_model_steps_are_config_keys(self, tmp_path):
+        from plumeIR.config.objects import ModelConfig
+        assert ModelConfig().plume_temp_step == 10.0
+        assert ModelConfig().atm_temp_step == 5.0
+        from plumeIR.config.keys import KEYS
+        key = KEYS[("MODEL", "plume_temp_step")]
+        assert key.low == 0.0 and key.low_open and key.high == 700.0
 
     def test_emission_axis_default_covers_ambient(self):
         """
@@ -522,12 +557,12 @@ class TestBuilder:
         from types import SimpleNamespace
         from plumeIR.standards import EMISSION_PLUME_TEMP_NODES, plume_temp_nodes_for
         for fit in (False, True):
-            ax = plume_temp_nodes_for(SimpleNamespace(plume_temp=289.7, fit_tplume=fit))
+            ax = plume_temp_nodes_for(SimpleNamespace(plume_temp=289.7, fit_plume_temp=fit))
             assert np.array_equal(ax, EMISSION_PLUME_TEMP_NODES)
             assert ax[0] <= 220.0 and ax[-1] >= 400.0
             assert np.all(np.diff(ax) == 10.0)
         # an unresolved a priori falls back to the default axis
-        none = SimpleNamespace(plume_temp=None, fit_tplume=True)
+        none = SimpleNamespace(plume_temp=None, fit_plume_temp=True)
         assert np.array_equal(plume_temp_nodes_for(none), EMISSION_PLUME_TEMP_NODES)
 
     def test_emission_axis_widens_for_a_colder_or_hotter_run(self, monkeypatch):
@@ -541,7 +576,7 @@ class TestBuilder:
         from types import SimpleNamespace
         from plumeIR import standards
         cold = standards.plume_temp_nodes_for(
-            SimpleNamespace(plume_temp=207.0, fit_tplume=False))
+            SimpleNamespace(plume_temp=207.0, fit_plume_temp=False))
         assert cold[0] <= 207.0 <= cold[-1] and cold[0] < 220.0
         assert cold[-1] == 400.0
 
@@ -549,12 +584,12 @@ class TestBuilder:
             **standards.TEMP_DEFAULTS, "plume_temp": {"below": 5.0, "above": 150.0},
         }))
         hot = standards.plume_temp_nodes_for(
-            SimpleNamespace(plume_temp=289.7, fit_tplume=True))
+            SimpleNamespace(plume_temp=289.7, fit_plume_temp=True))
         assert hot[-1] >= 289.7 + 150.0 and hot[0] == 220.0
         assert np.all(np.diff(hot) == 10.0)
         # a FIXED temperature does not pull the axis out to the fit bound
         fixed = standards.plume_temp_nodes_for(
-            SimpleNamespace(plume_temp=289.7, fit_tplume=False))
+            SimpleNamespace(plume_temp=289.7, fit_plume_temp=False))
         assert fixed[-1] == 400.0
 
     def test_free_plume_temp_starts_inside_its_bounds(self, tmp_path):
@@ -629,7 +664,7 @@ class TestBuilder:
         cfg_text = _minimal_layer_config().replace(
             "plume_aero  : None", "plume_aero  : H2SO4_aq"
         ) + "\n"
-        # fit_aero_composition default False → wt fixed
+        # fit_wt default False → wt fixed
         cfg_path = tmp_path / "t.ini"
         cfg_path.write_text(cfg_text)
         ps = build_from_config(cfg_path)["params"][0]
@@ -666,7 +701,7 @@ class TestBuilder:
 
     def test_h2so4_composition_free_when_flagged(self, tmp_path):
         cfg_text = _minimal_layer_config(
-            extra_retr="fit_aero_composition : True"
+            extra_retr="fit_wt : True"
         ).replace("plume_aero  : None", "plume_aero  : H2SO4_aq")
         cfg_path = tmp_path / "t.ini"
         cfg_path.write_text(cfg_text)
@@ -705,7 +740,7 @@ class TestBuilder:
         atm = tmp_path / "mls.atm"
         atm.write_text("! dummy\n")
         cfg_path = tmp_path / "emis.ini"
-        cfg_path.write_text(_minimal_emission_config(atm, extra_geom="fit_tdist : False"))
+        cfg_path.write_text(_minimal_emission_config(atm, extra_geom="fit_dt_dist : False"))
         ps = build_from_config(cfg_path)["params"][0]
         assert "dt_dist" not in ps
         assert "dt_prox" in ps   # still present
@@ -787,7 +822,7 @@ class TestConfigAsData:
                      "filter_string": None, "max_spec": 5},
             "MODEL": {"nperwn": 25, "model_padding": 50.5},
             "GEOMETRY": {"type": "layer", "pathlength": 1e-3, "atm_temp": 280.25,
-                         "fit_gas_temp": False},
+                         "fit_plume_temp": False},
             "RETRIEVAL": {"apod_type": "NB medium", "fov": 0.0213},
             "DEFAULTS": {"so2_conc": 5.0, "h2so4_aq_size": 0.7},
             "fits": [{"_label": "FIT0", "fit": True, "fit_window": [2400, 2550.5],

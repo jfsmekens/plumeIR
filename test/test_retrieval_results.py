@@ -157,7 +157,7 @@ def test_to_ppm_m_uses_recorded_pt(setup_geo):
 
 
 def test_fixed_params_are_recorded():
-    # Fixed parameters (here gas_temp) must appear with varied=False and no
+    # Fixed parameters (here plume_temp) must appear with varied=False and no
     # error; varied ones (SO2) with varied=True and an error.
     G, P, T = ParameterKind.GAS_PLUME, ParameterKind.POLYNOMIAL, ParameterKind.TEMPERATURE
     windows = {"FIT0": FitWindowConfig(label="FIT0", wn_start=2400.0, wn_stop=2550.0,
@@ -166,24 +166,24 @@ def test_fixed_params_are_recorded():
     param_sets = {"FIT0": ParameterSet([
         Parameter("poly0", 1.0, True, (-5, 5), P),
         Parameter("SO2", 0.01, True, (0, np.inf), G, ref_column=1e17),
-        Parameter("gas_temp", 450.0, False, (300, 1000), T),   # FIXED
+        Parameter("plume_temp", 450.0, False, (300, 1000), T),   # FIXED
     ])}
     fr = FitResult(
         success=True, method="nlls", varied_names=("poly0", "SO2"),
-        values={"poly0": 1.0, "SO2": 2.0, "gas_temp": 450.0},
+        values={"poly0": 1.0, "SO2": 2.0, "plume_temp": 450.0},
         perror={"poly0": 0.01, "SO2": 0.1}, covariance=None,
         wn=_DUMMY, measured=_DUMMY, model=_DUMMY, rmse=0.01, nfev=10,
         message="ok", window_label="FIT0", spectrum_id="t0",
     )
     df = ResultsTable.from_fits([fr], windows, param_sets).to_dataframe()
-    gt = df[df.parameter == "gas_temp"].iloc[0]
+    gt = df[df.parameter == "plume_temp"].iloc[0]
     assert gt.value == pytest.approx(450.0)        # K, recorded
     assert not bool(gt.varied)
     assert np.isnan(gt.error)
     so2 = df[df.parameter == "SO2"].iloc[0]
     assert bool(so2.varied) and so2.error == pytest.approx(0.1)
-    # All three parameters present (poly0, SO2, gas_temp).
-    assert set(df.parameter) == {"poly0", "SO2", "gas_temp"}
+    # All three parameters present (poly0, SO2, plume_temp).
+    assert set(df.parameter) == {"poly0", "SO2", "plume_temp"}
 
 
 def test_converters_survive_csv_roundtrip(setup_geo, tmp_path):

@@ -2,7 +2,7 @@
 Panels: one view of a run each, drawn into Axes they are given.
 
     FitPanel         measured and model spectrum of one window, residual beneath
-    TimeSeriesPanel  target columns against time, each scaled to its maximum
+    TimeSeriesPanel  target columns against time, each scaled to its range
     RatioPanel       one gas ratio: every point, the latest ``scroll``, the
                      newest, and the regression line with its slope
 
@@ -192,11 +192,15 @@ class FitPanel:
 
 class TimeSeriesPanel:
     """
-    Target columns against time, each divided by its maximum (as v2).
+    Target columns against time, each scaled to its own range.
 
     Columns of different species differ by orders of magnitude and in units,
-    so each is scaled to its own maximum; the legend, above the axes so it
-    never covers the data, gives that maximum.
+    so each is scaled ``(y − min) / (max − min)`` over the spectra shown, 0
+    at its minimum and 1 at its maximum; the legend, above the axes so it
+    never covers the data, gives both.  Changed 2026-11-18 (developer) from
+    v2's ``y / max``, which squashed a series with a large background (H2O,
+    CO2: a few percent of variation near 1) against the top of the axes, so
+    one could not see whether it moved with the others.
 
     Parameters
     ----------
@@ -215,7 +219,7 @@ class TimeSeriesPanel:
         self._dates = False
         self._styled = False
         self._cursor = None     # the inspected spectrum (RunState.select)
-        ax.set_ylabel("Column / maximum")
+        ax.set_ylabel("Column, scaled to its range")
         ax.set_xlabel("Time")
         if self.species is not None:
             self._make_lines()
@@ -252,17 +256,36 @@ class TimeSeriesPanel:
         is_time = np.issubdtype(t.dtype, np.datetime64)
         for sp, line in self._lines.items():
             y, _ = state.column(sp, last)
-            peak = np.nanmax(np.abs(y)) if np.any(np.isfinite(y)) else np.nan
-            scaled = y / peak if np.isfinite(peak) and peak > 0 else y * np.nan
+            finite = np.isfinite(y)
+            lo = np.nanmin(y) if finite.any() else np.nan
+            hi = np.nanmax(y) if finite.any() else np.nan
+            span = hi - lo
+            # A constant series (or a single spectrum) has no range: drawn at
+            # mid-height rather than dropped, so it stays visible.
+            scaled = ((y - lo) / span if np.isfinite(span) and span > 0
+                      else np.where(finite, 0.5, np.nan))
             line.set_data(t, scaled)
             unit = _COLUMN_UNITS[state.is_aerosol(sp)]
-            line.set_label(f"{target_name(state, sp)}, max {_fmt(peak)} {unit}")
+            line.set_label(f"{target_name(state, sp)}, {_fmt(lo)} to {_fmt(hi)} {unit}")
         if state.selected is not None and not self.live:
             sel = state.times()[state.selected]
             if self._cursor is None:
-                self._cursor = self.ax.axvline(sel, color="k", ls=":", lw=0.9,
-                                               zorder=1)
+                # Red dashes above the series, as the selected point's red
+                # circle on the ratio panels (developer, 2026-11-18; was a
+                # black dotted line beneath the data, easy to miss).
+                self._cursor = self.ax.axvline(sel, color=_C_RATIO_NEWEST, ls="--",
+                                               lw=1.5, zorder=3)
+                # A dot on each frame edge, styled as the ratio panels' selected
+                # point.  Axes-fraction y (0 bottom, 1 top), so the dots stay on
+                # the edges whatever the autoscaled limits, never enter
+                # relim, and, unclipped, sit across the frame instead of being
+                # cut in half.
+                (self._cursor_ends,) = self.ax.plot(
+                    [sel, sel], [0.0, 1.0], ls="", marker="o", ms=5,
+                    mfc=_C_RATIO_NEWEST, mec="k", mew=0.5, zorder=4,
+                    transform=self.ax.get_xaxis_transform(), clip_on=False)
             self._cursor.set_xdata([sel, sel])
+            self._cursor_ends.set_xdata([sel, sel])
         if is_time and not self._dates:
             locator = mdates.AutoDateLocator()
             self.ax.xaxis.set_major_locator(locator)

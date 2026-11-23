@@ -19,11 +19,11 @@ Both implement the :class:`~plumeIR.forward.base.ForwardModel` interface and
 hold read-only references to a Reference, ParameterSet, geometry, and
 Retrieval.  They never mutate their inputs.
 
-Two plume temperatures (when ``model_gas_emission`` is on):
-    gas_temp  — indexes the gas LUT for the *absorption* OD shape
-    gasE_temp — separate parameter for the *self-emission* level, entering
+Two plume temperatures (when ``model_plume_emission`` is on):
+    plume_temp  — indexes the gas LUT for the *absorption* OD shape
+    plumeE_temp — separate parameter for the *self-emission* level, entering
                 both the emission OD and the Planck ratio
-                B(gasE_temp) / B(source_temp).
+                B(plumeE_temp) / B(source_temp).
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from plumeIR.forward.base import (
     gas_optical_depth,
     rad,
 )
-from plumeIR.forward.ils import ILSKernel, kernel_trim_fov, make_ils
+from plumeIR.forward.ils import ILSKernel, broad_kernel_args, kernel_trim_fov, make_ils
 from plumeIR.config.objects import FitWindowConfig, LayerGeometry, Retrieval
 from plumeIR.parameters.parameter import ParameterKind, ParameterSet
 from plumeIR.reference.reference import Reference
@@ -57,13 +57,13 @@ class _LayerODMixin:
     Shared optical-depth assembly for layer-geometry forward models.
 
     Subclasses provide ``self.ref``, ``self.window``, ``self.geometry``,
-    ``self.model_gas_emission`` and call :meth:`_optical_depths`.
+    ``self.model_plume_emission`` and call :meth:`_optical_depths`.
     """
 
     ref:                Reference
     window:             FitWindowConfig
     geometry:           LayerGeometry
-    model_gas_emission: bool
+    model_plume_emission: bool
 
     def _gas_od(self, p: dict, name: str, temp: float) -> np.ndarray:
         """
@@ -99,21 +99,21 @@ class _LayerODMixin:
         Returns
         -------
         (OD_plume, OD_plume_emission)
-            ``OD_plume_emission`` is zero unless ``model_gas_emission`` is on.
+            ``OD_plume_emission`` is zero unless ``model_plume_emission`` is on.
         """
         n = self.ref.wn.size
         OD_plume  = np.zeros(n)
         OD_plumeE = np.zeros(n)
 
-        gas_temp  = p.get("gas_temp", self.geometry.plume_temp)
-        gasE_temp = p.get("gasE_temp", gas_temp)
+        plume_temp  = p.get("plume_temp", self.geometry.plume_temp)
+        plumeE_temp = p.get("plumeE_temp", plume_temp)
         for species in self.window.plume_gases:
-            OD_plume = OD_plume + self._gas_od(p, species, gas_temp)
-            # Emission OD at gasE_temp, through the same 1-D/2-D dispatch as the
+            OD_plume = OD_plume + self._gas_od(p, species, plume_temp)
+            # Emission OD at plumeE_temp, through the same 1-D/2-D dispatch as the
             # absorption.  A continuum gas (2-D LUT, e.g. plume H2O) used to be
             # skipped here, silently dropping its self-emission.
-            if self.model_gas_emission:
-                OD_plumeE = OD_plumeE + self._gas_od(p, species, gasE_temp)
+            if self.model_plume_emission:
+                OD_plumeE = OD_plumeE + self._gas_od(p, species, plumeE_temp)
 
         for species in self.window.plume_aero:
             OD_plume = OD_plume + self._aero_od(p, species)
@@ -133,6 +133,7 @@ class _LayerODMixin:
             apod_type= self.retrieval.apod_type,
             trim_opd = self.retrieval.max_opd,  # fixed length while max_opd varies
             trim_fov = kernel_trim_fov(self.params["fov"]),  # fixed length while fov varies
+            **broad_kernel_args(p, self.params, self.retrieval),
         )
 
 
@@ -185,11 +186,11 @@ class LayerForwardModel(_LayerODMixin, ForwardModel):
         self.e_model   = e_model
         self.res_model = res_model
 
-        # Per-window override for model_gas_emission
-        self.model_gas_emission = (
-            window.model_gas_emission
-            if window.model_gas_emission is not None
-            else geometry.model_gas_emission
+        # Per-window override for model_plume_emission
+        self.model_plume_emission = (
+            window.model_plume_emission
+            if window.model_plume_emission is not None
+            else geometry.model_plume_emission
         )
 
     def model_highres(self, p_vec: np.ndarray) -> np.ndarray:
@@ -223,11 +224,11 @@ class LayerForwardModel(_LayerODMixin, ForwardModel):
 
         F = self.e_model * self.res_model * T_plume * T_atm * bg
 
-        if self.model_gas_emission:
+        if self.model_plume_emission:
             E_plume = 1.0 - np.exp(-OD_plumeE)
             source_temp = p.get("source_temp", self.geometry.source_temp)
-            gasE_temp   = p.get("gasE_temp", p.get("gas_temp", self.geometry.plume_temp))
-            Bg = rad(wn_model, gasE_temp) / rad(wn_model, source_temp)
+            plumeE_temp   = p.get("plumeE_temp", p.get("plume_temp", self.geometry.plume_temp))
+            Bg = rad(wn_model, plumeE_temp) / rad(wn_model, source_temp)
             F = F + Bg * E_plume * self.res_model * T_atm * bg
 
         return F
@@ -238,7 +239,7 @@ class LayerForwardModel(_LayerODMixin, ForwardModel):
         F = apply_ils(F, self._make_kernel(p))
         return apply_shift_offset(
             F, self.ref.wn, self.wn_meas,
-            shift=p.get("nu_shift", 0.0), offset=p.get("offset", 0.0),
+            shift=p.get("shift", 0.0), offset=p.get("offset", 0.0),
         )
 
     def continuum(self, p_vec: np.ndarray) -> np.ndarray:
@@ -290,7 +291,7 @@ class TransmittanceForwardModel(_LayerODMixin, ForwardModel):
         self.window    = window
         self.wn_meas   = np.asarray(wn_meas, dtype=float)
         # Transmittance model never includes the emission term
-        self.model_gas_emission = False
+        self.model_plume_emission = False
 
     def model_highres(self, p_vec: np.ndarray) -> np.ndarray:
         """High-resolution plume transmittance × polynomial (pre-ILS)."""
@@ -314,5 +315,5 @@ class TransmittanceForwardModel(_LayerODMixin, ForwardModel):
         F = apply_ils(F, self._make_kernel(p))
         return apply_shift_offset(
             F, self.ref.wn, self.wn_meas,
-            shift=p.get("nu_shift", 0.0), offset=p.get("offset", 0.0),
+            shift=p.get("shift", 0.0), offset=p.get("offset", 0.0),
         )

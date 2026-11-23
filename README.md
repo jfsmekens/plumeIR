@@ -1,6 +1,6 @@
 # plumeIR
 
-> **Pre-release (3.0.0rc5).** This is a preview of plumeIR v3 on the
+> **Pre-release (3.0.0rc6).** This is a preview of plumeIR v3 on the
 > `v3-preview` branch, published so it can be tried before release. Results
 > and config keys may still change. The stable version is v2.0, on `main`
 > and at tag `v2.0`.
@@ -150,8 +150,9 @@ Model (RFM), *J. Quant. Spectrosc. Radiat. Transfer* **186**, 243-253.
 ## Quick start
 
 The `examples/` folder holds one config per geometry: `layer.ini` (MIDAC,
-layer geometry, six windows: SO2, HCl, sulphate aerosol in the thermal
-infrared, CO with CO2 and H2O, HF, and CH4 as a check on the path length; the
+layer geometry, five fit windows: SO2, HCl, sulphate and water aerosol in the
+thermal infrared, CO with CO2 and H2O, HF; and a `*PATH` window whose ambient CH4
+checks the path length; the
 plume temperature fitted in the SO2 window and passed to the others, the
 ambient temperature held at the measured value; `polydeg : 2` throughout, as
 in v2) and `emission.ini` (Bruker,
@@ -272,7 +273,7 @@ Points worth knowing:
 - Paths may be relative to the config file, and may use `~` and `$VAR`. An RFM atmosphere profile can be given by name (`atm_path : mls.atm`) and is then found in `<rfm_dir>/atm`.
 - The ILS's maximum OPD and apodisation are read from the spectrum files. The field of view is fitted, starting from the instrument's nominal value.
 - A gas ratio regression (`*PLOT regression`) is Siegel (default), Theil-Sen, or `odr`. `odr` is weighted orthogonal-distance regression solved by York et al. (2004), *Am. J. Phys.* **72**, 367, weighted by both columns' fit errors. Its quoted error is scaled up by √MSWD when the points scatter more than those errors allow; the MSWD is in `summary.txt`.
-- **Reported errors are fit errors only.** A column's error comes from the fit covariance, so it assumes the forward model is exact and the residual is white noise. It contains nothing from fixed parameters (temperatures, path length, atmosphere profile), line-list intensities or calibration, and spectrally structured residuals make it too small. Treat it as a lower bound. On the layer validation data, the HCl/SO2 points scatter about 4.6 times more than their errors predict (MSWD 21).
+- **Reported errors are fit errors only.** A column's error comes from the fit covariance, so it assumes the forward model is exact and the residual is white noise. It contains nothing from fixed parameters (temperatures, path length, atmosphere profile), line-list intensities or calibration, and spectrally structured residuals make it too small. Treat it as a lower bound. On the layer validation data, the HCl/SO2 points scatter about 5 times more than their errors predict (MSWD 25).
 - An unknown key, or one the geometry does not use, is logged as a warning, not an error.
 
 ## Output
@@ -301,7 +302,8 @@ the run.
 
 ```
 plumeIR analyse RUN_FOLDER [RUN_FOLDER ...] [--output-dir DIR] [--width W]
-                [--spectra] [--reference GAS] [--gases GAS ...] [--min-r2 R2]
+                [--spectra] [--reference GAS] [--gases GAS ...]
+                [--exclude SPECIES ...] [--min-r2 R2]
                 [--no-jackknife] [--independent-errors] [--no-plots]
 ```
 
@@ -315,6 +317,7 @@ analysis with the defaults below and writes the same files.
 | `--spectra` | `--width` counts spectra instead of minutes |
 | `--reference GAS` | gas the ratios are quoted against (default SO2, else the first target) |
 | `--gases GAS ...` | species to analyse (default every target of the run) |
+| `--exclude SPECIES ...` | species to leave out, e.g. an aerosol that is fitted but is not part of the plume. Never decided from the data: a species that falls as the reference gas rises can still be an emission |
 | `--min-r2 R2` | leave out spectra whose window fitted below this R² |
 | `--no-jackknife` | skip the jackknife errors (faster) |
 | `--independent-errors` | ignore the error correlation of species fitted in the same window |
@@ -361,7 +364,7 @@ v3.0 has been checked on two real datasets against independent results.
 
 | Geometry | Data | Reference | Result |
 |---|---|---|---|
-| layer, single beam | 418 MIDAC spectra against a lava source, 2021-08-11, windows SO2 / HCl / CO+CO2 | plumeIR v2 rerun with matched settings | SO2 v3/v2 1.028 (R 0.997). HCl, CO and CO2 differ by v2's known ILS faults (CHANGELOG) |
+| layer, single beam | 418 MIDAC spectra against a lava source, 2021-08-11, windows SO2 / HCl / CO+CO2 | plumeIR v2 rerun with matched settings | SO2 v3/v2 1.007 (R 0.997). HCl (1.90), CO (1.69) and CO2 (1.47) differ, in part by v2's known ILS faults (CHANGELOG) |
 | emission, absolute radiance | 300 Bruker spectra, Stromboli, 2019-09-11, 750-1250 cm⁻¹, SO2 + ash + H2SO4 | the earlier emission code's fits of the same spectra | SO2 r = 0.97, v3/earlier 0.83; ash events agree in timing (r 0.85) |
 
 All spectra converge in both datasets. The reasons for each difference from

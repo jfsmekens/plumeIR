@@ -448,7 +448,7 @@ def composition_table(
 
     df = results.df
     # Gases [molec cm⁻²] and aerosol mass columns [g m⁻²]; target parameters
-    # such as gas_temp, and aerosol size / composition (r0_, wt_), are out.
+    # such as plume_temp, and aerosol size / composition (r0_, wt_), are out.
     tg = df[df[COL_TARGET] & (df[COL_PARAM] == df[COL_SPECIES])
             & df[COL_SPECIES].isin(list(POSSIBLE_GASES) + list(POSSIBLE_AEROSOLS))]
     gases = list(dict.fromkeys(tg[COL_SPECIES]))

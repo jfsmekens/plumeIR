@@ -27,6 +27,7 @@ import numpy as np
 from matplotlib.figure import Figure
 
 from plumeIR._style import ANNOTATION_SIZE, style_context
+from plumeIR.config.keys import PATH_SECTION
 from plumeIR.config.objects import EmissionGeometry
 from plumeIR.plotting.panels import (
     FitPanel, RatioPanel, TimeSeriesPanel, pretty,
@@ -109,6 +110,10 @@ class AnalysisCanvas:
         self.interactive = interactive
         self.closed = False
         windows = state.window_labels if state.has_spectra else list(state.latest_fits)
+        # The path window (*PATH) is a diagnostic with no targets: it has no
+        # place among the fits (developer, 2026-11-18).  Its fit is still
+        # stored and written as fit_PATH.png with the final figures.
+        windows = [w for w in windows if w != PATH_SECTION]
         titles = titles or {}
         self.live = live
         n_fits, n_ratios = len(windows), len(state.ratios)

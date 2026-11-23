@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from plumeIR.constants import LEGACY_AEROSOL_NAMES, WEIGHTS
+from plumeIR.constants import LEGACY_AEROSOL_NAMES, LEGACY_PARAMETER_NAMES, WEIGHTS
 from plumeIR.config.objects import DUAL_ATM_SUFFIX, FitWindowConfig
 from plumeIR.parameters.parameter import Parameter, ParameterKind, ParameterSet
 from plumeIR.units import molec_cm2_to_g_m2, molec_cm2_to_ppmm
@@ -207,7 +207,7 @@ def _pt_for(geometry, kind: ParameterKind, values: dict[str, float]) -> tuple[fl
     Pressure/temperature [mbar, K] for a gas parameter's ppm·m conversion.
 
     Temperature is the **actual** value the retrieval used: the fitted/fixed
-    ``gas_temp``/``plume_temp`` (plume) or ``atm_temp`` (atmospheric) parameter
+    ``plume_temp`` (plume) or ``atm_temp`` (atmospheric) parameter
     if present, else the geometry a priori.  An unresolved a priori yields NaN
     rather than an exception.  Pressure never varies, so it is the geometry
     value.  Returns ``(NaN, NaN)`` for non-gas kinds (no ppm·m conversion).
@@ -223,11 +223,8 @@ def _pt_for(geometry, kind: ParameterKind, values: dict[str, float]) -> tuple[fl
         return _num(pres), _num(temp)
     if kind is ParameterKind.GAS_PLUME:
         pres = getattr(geometry, "plume_pres", _NAN)
-        # Emission fits plume_temp directly; layer uses gas_temp.  Either may be
-        # a fitted value, otherwise fall back to the geometry a priori.
-        temp = values.get("gas_temp",
-                          values.get("plume_temp",
-                                     getattr(geometry, "plume_temp", _NAN)))
+        # The fitted or held plume_temp (every geometry), else the a priori.
+        temp = values.get("plume_temp", getattr(geometry, "plume_temp", _NAN))
         return _num(pres), _num(temp)
     return _NAN, _NAN
 
@@ -256,6 +253,28 @@ def _rename_legacy_aerosols(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[aero, COL_PARAM] = [p[: len(p) - len(o)] + n if p.endswith(o) else p
                                for p, o, n in zip(params, old, new)]
     df.loc[aero, COL_SPECIES] = new
+    return df
+
+
+def _rename_legacy_parameters(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Rows of a former parameter name (``gas_temp``, ``gasE_temp``,
+    ``nu_shift``, until 2026-11-19) under the current one (``plume_temp``,
+    ``plumeE_temp``, ``shift``; :data:`~plumeIR.constants.LEGACY_PARAMETER_NAMES`),
+    in the parameter and species columns.  Keeps old run folders readable
+    against the renamed code, as their configs are by the parser.
+    """
+    if COL_PARAM not in df:
+        return df
+    hit = df[COL_PARAM].isin(list(LEGACY_PARAMETER_NAMES))
+    if COL_SPECIES in df:
+        hit |= df[COL_SPECIES].isin(list(LEGACY_PARAMETER_NAMES))
+    if not hit.any():
+        return df
+    df = df.copy()
+    df.loc[hit, COL_PARAM] = df.loc[hit, COL_PARAM].replace(LEGACY_PARAMETER_NAMES)
+    if COL_SPECIES in df:
+        df.loc[hit, COL_SPECIES] = df.loc[hit, COL_SPECIES].replace(LEGACY_PARAMETER_NAMES)
     return df
 
 
@@ -383,7 +402,7 @@ class ResultsTable:
         for col in (COL_VARIED, COL_TARGET, COL_SUCCESS):
             if col in df.columns:
                 df[col] = df[col].isin([True, "True", "TRUE", 1, "1"])
-        return cls(_rename_legacy_aerosols(df))
+        return cls(_rename_legacy_parameters(_rename_legacy_aerosols(df)))
 
     # ------------------------------------------------------------------
     # Accessors

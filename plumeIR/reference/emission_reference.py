@@ -541,7 +541,8 @@ def build_emission_reference(
     # rather than the tables behind it.
     cache_key = _reference_cache_key(
         window, geometry, retrieval, model, params,
-        extra=(H2O_SC_NODES, plume_temp_nodes_for(geometry), AERO_R0_NODES,
+        extra=(H2O_SC_NODES, plume_temp_nodes_for(geometry, step=model.plume_temp_step),
+               AERO_R0_NODES,
                PLUME_TEMP_NODES, tuple(EMISSION_DISTAL_GASES), n_layers),
     )
     cache_file = cache_dir / f"reference_{cache_key[:16]}.pkl"
@@ -629,7 +630,8 @@ def build_emission_reference(
         is_continuum = species in window.continuum_gases
         gas_luts[species] = GasLUT.load_or_compute(
             species=species, wn_start=wn_start, wn_stop=wn_stop, nperwn=nperwn,
-            temp_nodes=plume_temp_nodes_for(geometry), pathlength=plume_path, pres=plume_pres,
+            temp_nodes=plume_temp_nodes_for(geometry, step=model.plume_temp_step),
+            pathlength=plume_path, pres=plume_pres,
             ref_scd=float(ref_scd), continuum=is_continuum,
             cache_dir=cache_dir, recompute=recompute,
         )

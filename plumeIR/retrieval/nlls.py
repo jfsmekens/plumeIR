@@ -118,7 +118,7 @@ class NonLinearLeastSquares:
     with ``ftol = xtol = 1e-6`` (``gtol`` 1e-8).  ``least_squares`` tests the
     step against the *unscaled* parameter norm, which the polynomial
     coefficients dominate (~1e5 for a single beam), so a step that is large
-    in a gas scaling, ``fov`` or ``nu_shift`` counted as converged and fits
+    in a gas scaling, ``fov`` or ``shift`` counted as converged and fits
     stopped short of the minimum.  Measured on the validation datasets against
     ``x_scale='jac'`` at 1e-12: layer CO window, median RMSE 4.6% above the
     minimum, CO ×0.79 and CO2 ×0.91; emission, ash off by up to 40% of its

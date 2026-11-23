@@ -1,5 +1,8 @@
 """
-The worked examples in docs/CONFIG_GUIDE.md must be valid configs.
+The worked examples in docs/CONFIG_GUIDE.md must be valid configs, and must be
+the shipped examples (examples/*.ini) word for word: the guide shows the files
+themselves, so neither can drift (2026-11-18, when the examples stopped being
+generated).
 
 Each example is the fenced block under a "### 9.x" heading.  It is written to a
 temporary folder with ``data_dir`` pointed there, then read and validated by
@@ -19,6 +22,7 @@ from plumeIR.config.builder import build_from_raw
 from plumeIR.config.parser import read_config
 
 GUIDE = Path(__file__).resolve().parent.parent / "docs" / "CONFIG_GUIDE.md"
+EXAMPLES = GUIDE.parent.parent / "examples"
 
 
 def _examples() -> dict[str, str]:
@@ -31,6 +35,13 @@ def _examples() -> dict[str, str]:
 
 def test_guide_has_both_examples():
     assert set(_examples()) == {"9.1 Layer", "9.2 Emission"}
+
+
+@pytest.mark.parametrize("title, name", [("9.1 Layer", "layer"),
+                                         ("9.2 Emission", "emission")])
+def test_guide_example_is_the_shipped_file(title, name):
+    shipped = (EXAMPLES / f"{name}.ini").read_text(encoding="utf-8")
+    assert _examples()[title].rstrip("\n") == shipped.rstrip("\n")
 
 
 @pytest.mark.parametrize("title", ["9.1 Layer", "9.2 Emission"])

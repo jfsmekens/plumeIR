@@ -71,13 +71,13 @@ def _results(seed=0, n=N, t0=T0, r2_low=()):
                                    ("FIT1", "HCl", "HCl", hcl[i], 0.01),
                                    ("FIT3", "CO2", "CO2", co2[i], 0.02),
                                    ("FIT3", "CO2_atm", "CO2", co2_atm[i], 0.01),
-                                   ("FIT0", "gas_temp", "gas_temp", 450.0, 0.01)):
+                                   ("FIT0", "plume_temp", "plume_temp", 450.0, 0.01)):
             e = rel * abs(v)
             noisy = v + (rng.normal(0, e) if par in ("SO2", "HCl", "CO2") else 0.0)
             rows.append(dict(spectrum_id=sid, window=w, parameter=par, species=sp,
                              kind="GAS_PLUME", varied=True, value=noisy, error=e,
                              scd=noisy, scd_error=e, pres=973.0, temp=284.0,
-                             is_target=par in ("SO2", "HCl", "CO2", "gas_temp"),
+                             is_target=par in ("SO2", "HCl", "CO2", "plume_temp"),
                              success=True, rmse=0.01, r2=r2))
     return ResultsTable(df=pd.DataFrame(rows))
 
@@ -90,7 +90,7 @@ def comp():
 class TestTable:
 
     def test_gases_and_provenance(self, comp):
-        assert comp.gases == ["SO2", "HCl", "CO2"]          # gas_temp left out
+        assert comp.gases == ["SO2", "HCl", "CO2"]          # plume_temp left out
         assert comp.window == {"SO2": "FIT0", "HCl": "FIT1", "CO2": "FIT3"}
         assert len(comp) == N and comp.time.is_monotonic_increasing
 
@@ -675,6 +675,27 @@ class TestComponents:
         draw_composition_donut(ax, c, threshold=1e-9)
         assert len(ax.patches) == 4 and "other" not in " ".join(x.get_text() for x in ax.texts)
 
+    def test_donut_skips_a_negative_fraction(self, caplog):
+        """A species that falls as the plume rises has no slice, but is named."""
+        import dataclasses
+        import logging
+
+        from matplotlib.figure import Figure
+
+        from plumeIR.analysis.components import composition
+        from plumeIR.plotting.components import draw_composition_donut
+        c = composition(self._draw(10), intercept="window", width=2.0, jackknife=False)
+        ratios = c.ratios.copy()
+        ratios.loc["CO", "fraction"] = -abs(ratios.loc["CO", "fraction"])
+        c = dataclasses.replace(c, ratios=ratios)
+        ax = Figure().add_subplot()
+        with caplog.at_level(logging.WARNING, logger="plumeIR.plotting.components"):
+            draw_composition_donut(ax, c, threshold=1e-9)
+        assert len(ax.patches) == 3                      # CO2, SO2, HCl; no CO slice
+        text = " ".join(x.get_text() for x in ax.texts)
+        assert "not drawn" in text and "$CO$" in text
+        assert "CO not drawn" in caplog.text
+
 
 class TestReport:
     """The analysis of finished runs as tables, summary, figures and the
@@ -713,6 +734,24 @@ class TestReport:
                                                               reference="CO"))
         with pytest.raises(PlumeIRError, match="at least two"):
             analyse_table(t, "x", Path("."), AnalysisSettings(gases=("SO2",)))
+
+    def test_exclude_leaves_a_species_out(self, caplog):
+        """--exclude names what is left out; nothing is inferred (2026-11-19)."""
+        import logging
+
+        from plumeIR.analysis.cli import build_parser
+        from plumeIR.analysis.report import AnalysisSettings, analyse_table
+        t = TestComponents._draw(12)
+        a = analyse_table(t, "x", Path("."), AnalysisSettings(exclude=("CO",)))
+        assert "CO" not in a.gases and "CO" not in a.ratios.index
+        assert a.ratios.fraction.sum() == pytest.approx(1.0)
+        # absent from this run's targets (a comparison of several): a warning
+        with caplog.at_level(logging.WARNING, logger="plumeIR.analysis.report"):
+            a = analyse_table(t, "x", Path("."), AnalysisSettings(exclude=("WATER",)))
+        assert a.gases == TestComponents.GASES and "excluded ['WATER']" in caplog.text
+        args = build_parser().parse_args(["run", "--exclude", "WATER", "ICE"])
+        assert tuple(args.exclude) == ("WATER", "ICE")
+        assert build_parser().parse_args(["run"]).exclude == ()
 
     def test_write_and_figures(self, tmp_path):
         from plumeIR.analysis.report import (

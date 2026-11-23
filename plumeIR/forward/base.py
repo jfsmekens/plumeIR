@@ -265,7 +265,7 @@ class ForwardModel(ABC):
         bg = build_background_poly(coeffs, self.ref.wn) * factor
         bg = np.broadcast_to(bg, self.ref.wn.shape).astype(float)
         return apply_shift_offset(bg, self.ref.wn, self.wn_meas,
-                                  shift=p.get("nu_shift", 0.0),
+                                  shift=p.get("shift", 0.0),
                                   offset=p.get("offset", 0.0))
 
     def curve_fit_callable(self):

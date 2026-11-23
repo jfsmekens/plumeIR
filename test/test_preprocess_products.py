@@ -5,7 +5,7 @@ config keys.
 Validated first through the command line (2026-11-16): with both products in
 report mode (the default) the layer and emission validation runs reproduce
 their records (layer bit for bit, emission to 1.6e-14); in apply mode the
-layer ``nu_shift`` leftovers fall to ≤ 0.012 cm⁻¹ and the emission R² rises
+layer ``shift`` leftovers fall to ≤ 0.012 cm⁻¹ and the emission R² rises
 0.99754 → 0.99771.  These tests use a synthetic run: a line forest with opaque
 bands, a self spectrum, and spectra displaced by a known scale.
 

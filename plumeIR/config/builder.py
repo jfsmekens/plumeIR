@@ -50,7 +50,7 @@ from plumeIR import standards
 from plumeIR.parameters.parameter import Parameter, ParameterKind, ParameterSet
 from plumeIR.standards import (
     AERO_DEFAULTS, GAS_DEFAULTS, ILS_DEFAULTS,
-    ATM_TEMP_NODES, PLUME_TEMP_NODES, H2O_VMR_NODES, H2O_SC_NODES,
+    ATM_TEMP_RANGE, PLUME_TEMP_RANGE, DEFAULT_PLUME_TEMP_STEP, H2O_VMR_NODES, H2O_SC_NODES,
     plume_temp_nodes_for,
     AERO_R0_NODES, H2SO4_R0_NODES, H2SO4_WT_NODES,
     EMISSION_DISTAL_GASES, DISTAL_GAS_SC_BOUNDS,
@@ -187,7 +187,7 @@ def build_from_raw(raw: dict, base_dir: str | Path | None = None) -> dict:
         window = build_fit_window(fit_raw)
         windows.append(window)
         params.append(
-            build_parameter_set(window, geometry, retrieval, resolved_defaults)
+            build_parameter_set(window, geometry, retrieval, resolved_defaults, model)
         )
     params = _apply_sigma_priors(params, retrieval.sigma_prior)
 
@@ -216,7 +216,7 @@ def _apply_sigma_priors(
     Apply the ``*RETRIEVAL`` ``sigma_prior_<name>`` keys to the parameter sets.
 
     These set the OE prior 1σ of any parameter by name, including those that
-    are not species (``fov``, ``nu_shift``, ``poly0``), which the per-species
+    are not species (``fov``, ``shift``, ``poly0``), which the per-species
     ``sigma_prior`` field in ``*DEFAULTS`` cannot reach.  Where both name the
     same parameter, the ``*RETRIEVAL`` key wins.  Names match case-blind,
     because the parser lowercases keys (``sigma_prior_SO2`` arrives as
@@ -412,7 +412,7 @@ def build_retrieval(raw: dict, geometry_type: GeometryType) -> Retrieval:
 
 
 def build_fit_window(raw: dict) -> FitWindowConfig:
-    """Build :class:`FitWindowConfig` from a raw *FITn section dict."""
+    """Build :class:`FitWindowConfig` from a raw *FITn or *PATH section dict."""
 
     def _to_tuple(value: object) -> tuple[str, ...]:
         if value is None:
@@ -431,16 +431,18 @@ def build_fit_window(raw: dict) -> FitWindowConfig:
         plume_aero         = _to_tuple(raw.get("plume_aero")),
         targets            = _to_tuple(raw.get("targets")),
         polydeg            = _key_value(KEYS[("FIT", "polydeg")], raw),
-        fit_gas_temp       = raw.get("fit_gas_temp"),
+        fit_plume_temp     = raw.get("fit_plume_temp"),
         fit_atm_temp       = raw.get("fit_atm_temp"),
-        model_gas_emission = raw.get("model_gas_emission"),
-        fit_size_aero      = _flags(raw.get("fit_size_aero")),
-        fit_aero_composition = _flags(raw.get("fit_aero_composition")),
+        model_plume_emission = raw.get("model_plume_emission"),
+        fit_r0             = _flags(raw.get("fit_r0")),
+        fit_wt             = _flags(raw.get("fit_wt")),
         continuum_gases    = _to_tuple(raw.get("continuum")),
         plume_temp_from    = (str(raw["plume_temp_from"])
                               if raw.get("plume_temp_from") is not None else None),
         atm_temp_from      = (str(raw["atm_temp_from"])
                               if raw.get("atm_temp_from") is not None else None),
+        tracer             = (str(raw["tracer"]).upper()
+                              if raw.get("tracer") is not None else None),
     )
 
 
@@ -607,9 +609,14 @@ def build_parameter_set(
     geometry: LayerGeometry | EmissionGeometry | SolarGeometry,
     retrieval: Retrieval,
     resolved_defaults: dict[str, dict],
+    model: ModelConfig | None = None,
 ) -> ParameterSet:
     """
     Build a :class:`ParameterSet` for one fit window.
+
+    ``model`` supplies the temperature-axis spacing (``plume_temp_step``) for
+    the emission and solar plume axis, whose ends a fitted ``plume_temp`` is
+    bounded by; the default spacing when ``None``.
 
     Parameter order matches the forward model convention:
         polynomial → atm gases → plume gases → aerosols → spectral → temperature
@@ -734,14 +741,14 @@ def build_parameter_set(
         params.append(Parameter(
             name   = f"r0_{species}",
             value  = r0_init,
-            vary   = aerosol_switch(window.fit_size_aero, retrieval.fit_size_aero,
+            vary   = aerosol_switch(window.fit_r0, retrieval.fit_r0,
                                     species),
             bounds = (r0_lo, r0_hi),
             kind   = ParameterKind.AERO_PLUME,
         ))
 
         # Composition (H2SO4 only) — the 2-D LUT always covers weight
-        # fraction; this parameter is varied only if fit_aero_composition.
+        # fraction; this parameter is varied only if fit_wt.
         if species == H2SO4_AQ:
             wt_lo, wt_hi = float(H2SO4_WT_NODES[0]), float(H2SO4_WT_NODES[-1])
             wt_init = _sp(species, "comp", AERO_DEFAULTS, _fallback(AEROSOL, "comp"))
@@ -749,8 +756,8 @@ def build_parameter_set(
             params.append(Parameter(
                 name   = f"wt_{species}",
                 value  = wt_init,
-                vary   = aerosol_switch(window.fit_aero_composition,
-                                        retrieval.fit_aero_composition, species),
+                vary   = aerosol_switch(window.fit_wt,
+                                        retrieval.fit_wt, species),
                 bounds = (wt_lo, wt_hi),
                 kind   = ParameterKind.AERO_PLUME,
             ))
@@ -778,6 +785,20 @@ def build_parameter_set(
             kind   = ParameterKind.SPECTRAL,
         ))
 
+    # Broad line-shape component (2026-11-23): parameters only when fitted;
+    # a held value is read by the forward from the retrieval settings.
+    for name, flag in (("broad_frac", retrieval.fit_broad_frac),
+                       ("broad_width", retrieval.fit_broad_width)):
+        if flag:
+            lo, hi = _ils(name)["min"], _ils(name)["max"]
+            params.append(Parameter(
+                name   = name,
+                value  = float(min(max(getattr(retrieval, name), lo), hi)),
+                vary   = True,
+                bounds = (lo, hi),
+                kind   = ParameterKind.SPECTRAL,
+            ))
+
     if retrieval.fit_max_opd:
         params.append(Parameter(
             name   = "max_opd",
@@ -789,10 +810,10 @@ def build_parameter_set(
 
     if retrieval.fit_shift:
         params.append(Parameter(
-            name   = "nu_shift",
-            value  = retrieval.nu_shift,
+            name   = "shift",
+            value  = retrieval.shift,
             vary   = True,
-            bounds = (_ils("nu_shift")["min"], _ils("nu_shift")["max"]),
+            bounds = (_ils("shift")["min"], _ils("shift")["max"]),
             kind   = ParameterKind.SPECTRAL,
         ))
 
@@ -815,10 +836,10 @@ def build_parameter_set(
         return standards.TEMP_DEFAULTS[key]
 
     # Resolve per-window overrides for temperature fit flags
-    fit_gas_temp = (
-        window.fit_gas_temp
-        if window.fit_gas_temp is not None
-        else getattr(geometry, "fit_gas_temp", False)
+    fit_plume_temp = (
+        window.fit_plume_temp
+        if window.fit_plume_temp is not None
+        else getattr(geometry, "fit_plume_temp", False)
     )
     fit_atm_temp = (
         window.fit_atm_temp
@@ -826,45 +847,46 @@ def build_parameter_set(
         else getattr(geometry, "fit_atm_temp", False)
     )
 
-    # Temperature parameters that INDEX a gas LUT (gas_temp, atm_temp,
-    # gasE_temp) get bounds STRICTLY from the LUT node range — no
+    # Temperature parameters that INDEX a gas LUT (plume_temp, atm_temp,
+    # plumeE_temp) get bounds STRICTLY from the LUT node range — no
     # extrapolation.  source_temp / dt_* do not index a LUT and keep their
     # TEMP_DEFAULTS bounds.
-    plume_t_lo, plume_t_hi = float(PLUME_TEMP_NODES[0]), float(PLUME_TEMP_NODES[-1])
-    atm_t_lo,   atm_t_hi   = float(ATM_TEMP_NODES[0]),   float(ATM_TEMP_NODES[-1])
+    plume_t_lo, plume_t_hi = PLUME_TEMP_RANGE
+    atm_t_lo,   atm_t_hi   = ATM_TEMP_RANGE
+    plume_step = model.plume_temp_step if model is not None else DEFAULT_PLUME_TEMP_STEP
 
     if isinstance(geometry, LayerGeometry):
-        # Per-window override for model_gas_emission
-        model_gas_emission = (
-            window.model_gas_emission
-            if window.model_gas_emission is not None
-            else geometry.model_gas_emission
+        # Per-window override for model_plume_emission
+        model_plume_emission = (
+            window.model_plume_emission
+            if window.model_plume_emission is not None
+            else geometry.model_plume_emission
         )
 
         if window.plume_temp_from is not None:
-            # Staged plume temperature: a FIXED gas_temp whose
+            # Staged plume temperature: a FIXED plume_temp whose
             # value retrieval.run replaces per spectrum with the source window's
             # fit.  Fixed rather than absent so the forward reads it like any
             # other value and the results record the temperature actually used.
-            # An inherited GEOMETRY.fit_gas_temp is overridden here; an explicit
-            # per-window fit_gas_temp: True is refused by the validator.
+            # An inherited GEOMETRY.fit_plume_temp is overridden here; an explicit
+            # per-window fit_plume_temp: True is refused by the validator.
             params.append(Parameter(
-                name   = "gas_temp",
+                name   = "plume_temp",
                 value  = float(min(max(geometry.plume_temp, plume_t_lo), plume_t_hi)),
                 vary   = False,
                 bounds = (plume_t_lo, plume_t_hi),
                 kind   = ParameterKind.TEMPERATURE,
             ))
-        elif fit_gas_temp:
+        elif fit_plume_temp:
             params.append(Parameter(
-                name   = "gas_temp",
+                name   = "plume_temp",
                 value  = float(min(max(geometry.plume_temp, plume_t_lo), plume_t_hi)),
                 vary   = True,
                 bounds = (plume_t_lo, plume_t_hi),
                 kind   = ParameterKind.TEMPERATURE,
             ))
         if window.atm_temp_from is not None or fit_atm_temp:
-            # Staged ambient temperature, as gas_temp above: FIXED, its value
+            # Staged ambient temperature, as plume_temp above: FIXED, its value
             # replaced per spectrum by retrieval.run with the source window's
             # fit; an inherited GEOMETRY.fit_atm_temp is overridden.
             params.append(Parameter(
@@ -874,12 +896,12 @@ def build_parameter_set(
                 bounds = (atm_t_lo, atm_t_hi),
                 kind   = ParameterKind.TEMPERATURE,
             ))
-        # gasE_temp: separate free parameter controlling plume self-emission
+        # plumeE_temp: separate free parameter controlling plume self-emission
         # level (Planck term + emission OD). Indexes the gas LUT, so bounds
         # come from the plume temperature node range.
-        if model_gas_emission:
+        if model_plume_emission:
             params.append(Parameter(
-                name   = "gasE_temp",
+                name   = "plumeE_temp",
                 value  = float(min(max(geometry.plume_temp, plume_t_lo), plume_t_hi)),
                 vary   = True,
                 bounds = (plume_t_lo, plume_t_hi),
@@ -927,10 +949,10 @@ def build_parameter_set(
         # absorption and emission together, so unlike a pure emission-level
         # offset it is not exactly degenerate with the plume column.  Bounds
         # sit about the ambient value already resolved into geometry.plume_temp.
-        if geometry.fit_tplume:
+        if geometry.fit_plume_temp:
             if geometry.plume_temp is None:
                 raise ConfigError(
-                    "GEOMETRY.fit_tplume is True but plume_temp is not set. "
+                    "GEOMETRY.fit_plume_temp is True but plume_temp is not set. "
                     "The fit bounds are defined relative to the a priori, so it "
                     "must be given explicitly (leaving it unset means 'ambient "
                     "from the profile', which is only resolved at reference-build "
@@ -940,7 +962,7 @@ def build_parameter_set(
             spec  = _td("plume_temp")
             # The same axis the reference build uses, so the bounds are always
             # inside the table that will be queried.
-            axis = plume_temp_nodes_for(geometry)
+            axis = plume_temp_nodes_for(geometry, step=plume_step)
             lo = max(t_amb - spec["below"], float(axis[0]))
             hi = min(t_amb + spec["above"], float(axis[-1]))
             params.append(Parameter(
@@ -952,7 +974,7 @@ def build_parameter_set(
             ))
         # Proximal / distal layer temperature offsets (applied analytically
         # to each layer's effective emission temperature T_eff)
-        if geometry.fit_tprox:
+        if geometry.fit_dt_prox:
             params.append(Parameter(
                 name   = "dt_prox",
                 value  = geometry.dt_prox,
@@ -960,7 +982,7 @@ def build_parameter_set(
                 bounds = (_td("dt_prox")["min"], _td("dt_prox")["max"]),
                 kind   = ParameterKind.TEMPERATURE,
             ))
-        if geometry.fit_tdist:
+        if geometry.fit_dt_dist:
             params.append(Parameter(
                 name   = "dt_dist",
                 value  = geometry.dt_dist,

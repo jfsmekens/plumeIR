@@ -203,7 +203,7 @@ def fit_correlation(fit, a: str, b: str) -> float:
 
 
 def _column_targets(targets: Iterable[str]) -> list[str]:
-    """Targets that are species with a column (not diagnostics like ``gas_temp``)."""
+    """Targets that are species with a column (not diagnostics like ``plume_temp``)."""
     species = set(POSSIBLE_GASES) | set(POSSIBLE_AEROSOLS)
     out: list[str] = []
     for t in targets:

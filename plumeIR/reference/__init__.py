@@ -3,7 +3,6 @@
 from plumeIR.reference.gas_lut import GasLUT, _ATM_TEMP_NODES, _PLUME_TEMP_NODES, _H2O_VMR_NODES
 from plumeIR.reference.aero_lut import AerosolLUT
 from plumeIR.reference.atm_lut import AtmLayerLUT, derive_t_eff
-from plumeIR.reference.acidity import h2so4_acidity
 from plumeIR.reference.reference import Reference, build_reference
 from plumeIR.reference.emission_reference import build_emission_reference
 from plumeIR.reference.solar_reference import build_solar_reference
@@ -39,6 +38,5 @@ __all__ = [
     "GasLUT", "AerosolLUT", "AtmLayerLUT", "derive_t_eff",
     "Reference", "build_reference", "build_emission_reference",
     "build_solar_reference", "build_reference_for",
-    "h2so4_acidity",
     "_ATM_TEMP_NODES", "_PLUME_TEMP_NODES", "_H2O_VMR_NODES",
 ]

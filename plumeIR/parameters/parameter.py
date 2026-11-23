@@ -26,7 +26,7 @@ class ParameterKind(Enum):
     GAS_PLUME   = auto()   # plume gas scaling factor
     AERO_PLUME  = auto()   # plume aerosol scaling factor or size
     SPECTRAL    = auto()   # ILS / wavenumber parameter (fov, opd, shift, offset)
-    TEMPERATURE = auto()   # temperature parameter (gas_temp, atm_temp, dt_*, source_temp)
+    TEMPERATURE = auto()   # temperature parameter (plume_temp, atm_temp, dt_*, source_temp)
     ATMOSPHERE  = auto()   # background atmospheric state (H2O_sc — emission geometry)
 
 

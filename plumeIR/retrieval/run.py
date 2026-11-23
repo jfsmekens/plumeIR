@@ -130,7 +130,7 @@ def _staged_temps(base: ParameterSet, window: FitWindowConfig,
     """
     Hold staged temperatures at the source windows' fits for this spectrum.
 
-    ``window.plume_temp_from`` (``gas_temp``) and ``window.atm_temp_from``
+    ``window.plume_temp_from`` (``plume_temp``) and ``window.atm_temp_from``
     (``atm_temp``) each name an earlier window (the validator checks the
     order), whose result for the same spectrum is in ``done``.  A failed or
     missing source fit leaves the a priori in place, logged at DEBUG; the
@@ -153,7 +153,7 @@ def _staged_temps(base: ParameterSet, window: FitWindowConfig,
         ``base`` itself when nothing is staged, else a seeded copy.
     """
     staged = {}
-    for name, src in (("gas_temp", window.plume_temp_from),
+    for name, src in (("plume_temp", window.plume_temp_from),
                       ("atm_temp", window.atm_temp_from)):
         if src is None:
             continue

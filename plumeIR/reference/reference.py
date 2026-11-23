@@ -29,7 +29,8 @@ from plumeIR.config.objects import (
     Retrieval,
 )
 from plumeIR.parameters.parameter import ParameterSet
-from plumeIR.reference.gas_lut import GasLUT, _ATM_TEMP_NODES, _PLUME_TEMP_NODES, _H2O_VMR_NODES
+from plumeIR.reference.gas_lut import GasLUT, _H2O_VMR_NODES
+from plumeIR.standards import atm_temp_nodes, plume_temp_nodes_for
 from plumeIR.reference.aero_lut import AerosolLUT, _R0_NODES_UM
 from plumeIR.standards import GAS_DEFAULTS, AERO_DEFAULTS
 from plumeIR.units import scd_to_vmr, vmr_to_scd
@@ -137,7 +138,7 @@ def build_reference(
     geometry : LayerGeometry
         Layer geometry parameters (pathlength, T, P).
     retrieval : Retrieval
-        Retrieval flags (fit_size_aero, fit_aero_composition, use_babs_aero).
+        Retrieval flags (fit_r0, fit_wt, use_babs_aero).
     model : ModelConfig
         Model resolution (nperwn, model_padding, cache_dir).
     params : ParameterSet
@@ -163,7 +164,9 @@ def build_reference(
     # Check top-level cache
     cache_key  = _reference_cache_key(
         window, geometry, retrieval, model, params,
-        extra=(_ATM_TEMP_NODES, _PLUME_TEMP_NODES, _H2O_VMR_NODES, _R0_NODES_UM),
+        extra=(atm_temp_nodes(model.atm_temp_step),
+               plume_temp_nodes_for(geometry, step=model.plume_temp_step),
+               _H2O_VMR_NODES, _R0_NODES_UM),
     )
     cache_file = cache_dir / f"reference_{cache_key[:16]}.pkl"
     cached = load_cached_reference(cache_file, recompute, window.label)
@@ -194,12 +197,12 @@ def build_reference(
         # Atmospheric gas fills the full path; plume gas occupies only the
         # plume thickness (matching the ParameterSet ref_column convention).
         if is_atm:
-            temp_nodes = _ATM_TEMP_NODES
+            temp_nodes = atm_temp_nodes(model.atm_temp_step)
             temp_ref   = geometry.atm_temp
             pres       = geometry.atm_pres
             pathlength = geometry.pathlength
         else:
-            temp_nodes = _PLUME_TEMP_NODES
+            temp_nodes = plume_temp_nodes_for(geometry, step=model.plume_temp_step)
             temp_ref   = geometry.plume_temp
             pres       = geometry.plume_pres
             pathlength = geometry.plume_thickness
@@ -378,7 +381,7 @@ def _reference_cache_key(
             h.update(_file_digest(value))
     h.update(repr((float(model.nperwn), float(model.model_padding))).encode())
     h.update(repr((bool(retrieval.use_babs_aero),
-                   bool(retrieval.fit_aero_composition))).encode())
+                   bool(retrieval.fit_wt))).encode())
     h.update(repr([(p.name, float(p.ref_column)) for p in params]).encode())
     for item in extra:
         h.update(b"|")

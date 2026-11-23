@@ -112,36 +112,36 @@ def _fit(label: str, values: dict, success: bool = True) -> FitResult:
 class TestPlumeTempFromConfig:
 
     def test_receiver_holds_gas_temp_fixed(self, tmp_path):
-        cfg = _build(tmp_path, fit0="fit_gas_temp : True",
+        cfg = _build(tmp_path, fit0="fit_plume_temp : True",
                      fit1="plume_temp_from : FIT0")
         w1, p1 = _window(cfg, "FIT1")
         assert w1.plume_temp_from == "FIT0"
-        assert p1["gas_temp"].vary is False
-        assert p1["gas_temp"].value == 400.0
-        assert _window(cfg, "FIT0")[1]["gas_temp"].vary is True
+        assert p1["plume_temp"].vary is False
+        assert p1["plume_temp"].value == 400.0
+        assert _window(cfg, "FIT0")[1]["plume_temp"].vary is True
 
     def test_receiver_overrides_inherited_geometry_flag(self, tmp_path):
-        cfg = _build(tmp_path, geom="fit_gas_temp : True",
+        cfg = _build(tmp_path, geom="fit_plume_temp : True",
                      fit2="plume_temp_from : FIT0")
-        assert _window(cfg, "FIT2")[1]["gas_temp"].vary is False
-        assert _window(cfg, "FIT1")[1]["gas_temp"].vary is True   # unaffected
+        assert _window(cfg, "FIT2")[1]["plume_temp"].vary is False
+        assert _window(cfg, "FIT1")[1]["plume_temp"].vary is True   # unaffected
 
     def test_every_window_may_fit_its_own(self, tmp_path):
-        cfg = _build(tmp_path, geom="fit_gas_temp : True")
-        assert all(p["gas_temp"].vary for p in cfg["params"])
+        cfg = _build(tmp_path, geom="fit_plume_temp : True")
+        assert all(p["plume_temp"].vary for p in cfg["params"])
 
     def test_explicit_fit_and_receive_contradict(self, tmp_path):
         with pytest.raises(ConfigError, match="contradict"):
-            _build(tmp_path, fit0="fit_gas_temp : True",
+            _build(tmp_path, fit0="fit_plume_temp : True",
                    fit1="plume_temp_from : FIT0\nfit_gas_temp : True")
 
     def test_source_must_fit_gas_temp(self, tmp_path):
-        with pytest.raises(ConfigError, match="does not fit gas_temp"):
+        with pytest.raises(ConfigError, match="does not fit plume_temp"):
             _build(tmp_path, fit1="plume_temp_from : FIT0")
 
     def test_source_must_come_first(self, tmp_path):
         with pytest.raises(ConfigError, match="must come before"):
-            _build(tmp_path, fit2="fit_gas_temp : True",
+            _build(tmp_path, fit2="fit_plume_temp : True",
                    fit1="plume_temp_from : FIT2")
 
     def test_source_must_exist(self, tmp_path):
@@ -150,7 +150,7 @@ class TestPlumeTempFromConfig:
 
     def test_no_chains(self, tmp_path):
         with pytest.raises(ConfigError, match="receives its own"):
-            _build(tmp_path, fit0="fit_gas_temp : True",
+            _build(tmp_path, fit0="fit_plume_temp : True",
                    fit1="plume_temp_from : FIT0", fit2="plume_temp_from : FIT1")
 
 
@@ -159,7 +159,7 @@ class TestStagedPlumeTemp:
     def _pset(self) -> ParameterSet:
         return ParameterSet([
             Parameter("HCl", 0.01, True, (0.0, np.inf), ParameterKind.GAS_PLUME),
-            Parameter("gas_temp", 450.0, False, (300.0, 1000.0),
+            Parameter("plume_temp", 450.0, False, (300.0, 1000.0),
                       ParameterKind.TEMPERATURE),
         ])
 
@@ -170,20 +170,20 @@ class TestStagedPlumeTemp:
 
     def test_takes_this_spectrums_source_value(self):
         out = _staged_temps(self._pset(), self._window("FIT0"),
-                                 {"FIT0": _fit("FIT0", {"gas_temp": 512.5})}, "S0")
-        assert out["gas_temp"].value == 512.5
-        assert out["gas_temp"].vary is False
+                                 {"FIT0": _fit("FIT0", {"plume_temp": 512.5})}, "S0")
+        assert out["plume_temp"].value == 512.5
+        assert out["plume_temp"].vary is False
 
     def test_failed_source_keeps_a_priori(self):
         out = _staged_temps(self._pset(), self._window("FIT0"),
-                                 {"FIT0": _fit("FIT0", {"gas_temp": 512.5},
+                                 {"FIT0": _fit("FIT0", {"plume_temp": 512.5},
                                                success=False)}, "S0")
-        assert out["gas_temp"].value == 450.0
+        assert out["plume_temp"].value == 450.0
 
     def test_clipped_to_bounds(self):
         out = _staged_temps(self._pset(), self._window("FIT0"),
-                                 {"FIT0": _fit("FIT0", {"gas_temp": 1200.0})}, "S0")
-        assert out["gas_temp"].value == 1000.0
+                                 {"FIT0": _fit("FIT0", {"plume_temp": 1200.0})}, "S0")
+        assert out["plume_temp"].value == 1000.0
 
     def test_not_staged_is_untouched(self):
         ps = self._pset()
@@ -233,11 +233,11 @@ class TestAtmTempFromConfig:
 
     def test_independent_of_plume_temp_from(self, tmp_path):
         # Each temperature from its own source window.
-        cfg = _build(tmp_path, fit0="fit_gas_temp : True",
+        cfg = _build(tmp_path, fit0="fit_plume_temp : True",
                      fit1="fit_atm_temp : True",
                      fit2="plume_temp_from : FIT0\natm_temp_from : FIT1")
         p2 = _window(cfg, "FIT2")[1]
-        assert p2["gas_temp"].vary is False and p2["atm_temp"].vary is False
+        assert p2["plume_temp"].vary is False and p2["atm_temp"].vary is False
 
     def test_receiving_window_does_not_trigger_h2o_warning(self, tmp_path, caplog):
         import logging
@@ -252,7 +252,7 @@ class TestStagedAtmTemp:
     def _pset(self) -> ParameterSet:
         return ParameterSet([
             Parameter("CO", 0.01, True, (0.0, np.inf), ParameterKind.GAS_PLUME),
-            Parameter("gas_temp", 450.0, False, (300.0, 1000.0),
+            Parameter("plume_temp", 450.0, False, (300.0, 1000.0),
                       ParameterKind.TEMPERATURE),
             Parameter("atm_temp", 284.0, False, (250.0, 350.0),
                       ParameterKind.TEMPERATURE),
@@ -268,13 +268,13 @@ class TestStagedAtmTemp:
         out = _staged_temps(self._pset(), self._window(None, "FIT1"),
                             {"FIT1": _fit("FIT1", {"atm_temp": 283.6})}, "S0")
         assert out["atm_temp"].value == 283.6 and out["atm_temp"].vary is False
-        assert out["gas_temp"].value == 450.0
+        assert out["plume_temp"].value == 450.0
 
     def test_both_from_their_own_sources(self):
-        done = {"FIT0": _fit("FIT0", {"gas_temp": 512.5}),
+        done = {"FIT0": _fit("FIT0", {"plume_temp": 512.5}),
                 "FIT1": _fit("FIT1", {"atm_temp": 290.0})}
         out = _staged_temps(self._pset(), self._window("FIT0", "FIT1"), done, "S0")
-        assert out["gas_temp"].value == 512.5 and out["atm_temp"].value == 290.0
+        assert out["plume_temp"].value == 512.5 and out["atm_temp"].value == 290.0
 
     def test_failed_source_keeps_a_priori(self):
         out = _staged_temps(self._pset(), self._window(None, "FIT1"),

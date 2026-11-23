@@ -135,7 +135,7 @@ class TestResultsComponents:
 
 
 class TestPerWindowAerosolFit:
-    """fit_size_aero / fit_aero_composition per window (2026-11-17, developer)."""
+    """fit_r0 / fit_wt per window (2026-11-17, developer)."""
 
     def test_window_overrides_the_retrieval_section(self):
         from pathlib import Path
@@ -146,7 +146,7 @@ class TestPerWindowAerosolFit:
         base = Path("test/configs")
         ps = build_from_raw(raw, base_dir=base)["params"][0]
         assert ps["r0_H2SO4_aq"].vary and not ps["wt_H2SO4_aq"].vary          # inherited
-        raw["fits"][0].update(fit_size_aero=False, fit_aero_composition=True)
+        raw["fits"][0].update(fit_r0=False, fit_wt=True)
         ps = build_from_raw(raw, base_dir=base)["params"][0]
         assert not ps["r0_H2SO4_aq"].vary and not ps["r0_ASH"].vary
         assert ps["wt_H2SO4_aq"].vary
@@ -162,23 +162,23 @@ class TestPerWindowAerosolFit:
         assert aerosol_switch(("H2SO4_aq",), ("ASH",), "H2SO4_aq")      # the window wins
         raw = read_config("test/configs/test_emission.ini")
         base = Path("test/configs")
-        raw["RETRIEVAL"]["fit_size_aero"] = ["ASH"]          # ash's size free, sulphate's held
+        raw["RETRIEVAL"]["fit_r0"] = ["ASH"]          # ash's size free, sulphate's held
         ps = build_from_raw(raw, base_dir=base)["params"][0]
         assert ps["r0_ASH"].vary and not ps["r0_H2SO4_aq"].vary
-        raw["fits"][0]["fit_size_aero"] = ["H2SO4_aq"]
-        raw["fits"][0]["fit_aero_composition"] = ["H2SO4_aq"]
+        raw["fits"][0]["fit_r0"] = ["H2SO4_aq"]
+        raw["fits"][0]["fit_wt"] = ["H2SO4_aq"]
         ps = build_from_raw(raw, base_dir=base)["params"][0]
         assert not ps["r0_ASH"].vary and ps["r0_H2SO4_aq"].vary and ps["wt_H2SO4_aq"].vary
-        raw["fits"][0]["fit_size_aero"] = ["SMOKE"]
+        raw["fits"][0]["fit_r0"] = ["SMOKE"]
         with pytest.raises(ConfigError, match="unknown aerosol"):
             build_from_raw(raw, base_dir=base)
 
     def test_text_round_trip_and_legacy_names(self, tmp_path):
         from plumeIR.config.parser import read_config, write_config
         raw = read_config("test/configs/test_emission.ini")
-        raw["RETRIEVAL"]["fit_size_aero"] = ["H2SO4", "ASH"]       # former name
-        raw["fits"][0]["fit_aero_composition"] = True
+        raw["RETRIEVAL"]["fit_r0"] = ["H2SO4", "ASH"]       # former name
+        raw["fits"][0]["fit_wt"] = True
         write_config(raw, tmp_path / "c.ini")
         back = read_config(tmp_path / "c.ini")
-        assert back["RETRIEVAL"]["fit_size_aero"] == ["H2SO4_aq", "ASH"]
-        assert back["fits"][0]["fit_aero_composition"] is True
+        assert back["RETRIEVAL"]["fit_r0"] == ["H2SO4_aq", "ASH"]
+        assert back["fits"][0]["fit_wt"] is True

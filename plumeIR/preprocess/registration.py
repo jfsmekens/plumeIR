@@ -10,7 +10,7 @@ wavelength, off-axis rays), s0 a constant shift.  Measured:
   +0.002 cm⁻¹, r = 0.98 per spectrum with ε from seven fitted windows
   (−1.503e-4);
 - emission (Bruker): shift **plus** scale, slope −2.2e-4 with a non-zero
-  constant, so one ``nu_shift`` over 750-1250 cm⁻¹ leaves ~±0.055 cm⁻¹ at the
+  constant, so one ``shift`` over 750-1250 cm⁻¹ leaves ~±0.055 cm⁻¹ at the
   window edges.
 
 Method, per spectrum:
@@ -35,8 +35,8 @@ Each spectrum is registered on its own, with the free fit (s0 + ε·ν), and
 nothing is decided or smoothed across the series (changed 2026-11-16): measured with the registration
 applied, per spectrum against a 15-spectrum running median changes no column
 (×1.0000, 5-95% within ±0.1% layer, ±0.3% emission SO2) and leaves less to
-``nu_shift`` (its scatter 1.4-3.3× smaller), and a constant s0 is what
-``nu_shift`` fits anyway, so the run-level choice between a pure scale and
+``shift`` (its scatter 1.4-3.3× smaller), and a constant s0 is what
+``shift`` fits anyway, so the run-level choice between a pure scale and
 shift + scale changed nothing either.  So the registration needs no later
 spectra, as real-time processing requires.  The fit through the origin is
 still reported, as a diagnostic of the instrument.

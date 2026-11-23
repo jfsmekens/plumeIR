@@ -101,7 +101,7 @@ def _fit(label: str, sid: str, gas: str, column: float, ref: float,
     meas = 1.0 + 0.1 * np.sin(wn / 7.0)
     return FitResult(
         success=success, method="nlls", varied_names=("poly0", gas),
-        values={"poly0": 1.0, gas: column / ref, "fov": 0.021, "nu_shift": 0.01},
+        values={"poly0": 1.0, gas: column / ref, "fov": 0.021, "shift": 0.01},
         perror={"poly0": 0.01, gas: 0.01 * column / ref},
         covariance=None, wn=wn, measured=meas, model=meas + 1e-3,
         rmse=1e-3, nfev=10, message="ok", window_label=label, spectrum_id=sid,
@@ -429,7 +429,12 @@ class TestPanels:
         TimeSeriesPanel(ax, live=True).update(state)
         so2 = next(l for l in ax.lines if "SO" in l.get_label())
         assert len(so2.get_ydata()) == state.scroll
-        assert np.nanmax(so2.get_ydata()) == pytest.approx(1.0)
+        # Scaled to its range: 0 at the minimum, 1 at the maximum (2026-11-18).
+        y = so2.get_ydata()
+        assert np.nanmax(y) == pytest.approx(1.0) and np.nanmin(y) == pytest.approx(0.0)
+        cols, _ = state.column("SO2", state.scroll)
+        np.testing.assert_allclose(y, (cols - np.nanmin(cols)) / np.ptp(cols))
+        assert " to " in so2.get_label()
         assert len({l.get_marker() for l in ax.lines}) == 2   # not colour alone
         from matplotlib import colors as mcolors
         from plumeIR.constants import PLOT_COLORS
@@ -437,6 +442,13 @@ class TestPanels:
         whole = Figure().add_subplot()
         TimeSeriesPanel(whole, live=False).update(state)
         assert len(whole.lines[0].get_ydata()) == 12
+
+    def test_time_series_constant_series_at_mid_height(self):
+        state = _fed(_setup(n=1))
+        ax = Figure().add_subplot()
+        TimeSeriesPanel(ax, live=False).update(state)
+        for line in ax.lines:
+            np.testing.assert_array_equal(line.get_ydata(), [0.5])
 
     def test_time_series_aerosols_dashed_and_open(self):
         state = RunState(["SO2", "ASH"])
@@ -882,6 +894,22 @@ class TestRunStateFromRunDir:
         assert "(plume)" not in target_name(state, "SO2")
 
 
+def test_canvas_leaves_out_the_path_window():
+    """The *PATH window (no targets) gets no fit panel (2026-11-18)."""
+    from dataclasses import replace
+    setup = _setup()
+    path = FitWindowConfig(label="PATH", wn_start=2880.0, wn_stop=2990.0,
+                           atm_gases=("CH4",), plume_gases=(), plume_aero=(),
+                           targets=(), polydeg=0, tracer="CH4")
+    setup = replace(setup, windows={**setup.windows, "PATH": path},
+                    params={**setup.params, "PATH": setup.params["FIT0"]})
+    state = RunState.for_run(setup)
+    assert "PATH" in state.window_labels
+    canvas = AnalysisCanvas(state, live=False)
+    fits = [p.window for p in canvas.panels if isinstance(p, FitPanel)]
+    assert fits == ["FIT0", "FIT1"]
+
+
 class TestInspector:
 
     def test_steps_and_title(self, tmp_path, patched):
@@ -918,6 +946,31 @@ class TestInspector:
         far = rp.ax.transData.inverted().transform(
             rp.ax.transData.transform([[px[4], py[4]]])[0] + [200, 200])
         assert insp.spectrum_at(rp.ax, *far) is None
+
+    def test_cursor_marks_the_selected_time(self, tmp_path, patched):
+        """A red dashed line above the series, moving with the selection."""
+        import matplotlib.dates as mdates
+        insp = Inspector.from_run_dir(_inspect_run(tmp_path, patched),
+                                      interactive=False)
+        ts = next(p for p in insp.canvas.panels if isinstance(p, TimeSeriesPanel))
+        insp.show(3)
+        cursor = ts._cursor
+        assert cursor.get_linestyle() == "--"
+        assert cursor.get_color() == "tab:red"
+        assert cursor.get_zorder() > max(l.get_zorder() for l in ts._lines.values())
+        x = mdates.date2num(insp.state.times()[3].astype("datetime64[us]").item())
+        assert mdates.date2num(cursor.get_xdata()[0]) == pytest.approx(x)
+        # Red dots on the frame edges (axes-fraction y), unclipped, leaving the
+        # autoscaled limits to the data.
+        ends = ts._cursor_ends
+        assert list(ends.get_ydata()) == [0.0, 1.0]
+        assert ends.get_transform() == ts.ax.get_xaxis_transform()
+        assert not ends.get_clip_on() and ends.get_markerfacecolor() == "tab:red"
+        ylim = ts.ax.get_ylim()
+        insp.show(4)
+        assert mdates.date2num(ends.get_xdata()[0]) == pytest.approx(
+            mdates.date2num(insp.state.times()[4].astype("datetime64[us]").item()))
+        assert ts.ax.get_ylim() == ylim
 
     def test_needs_stored_fits(self):
         with pytest.raises(ValueError):

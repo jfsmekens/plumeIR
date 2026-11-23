@@ -11,8 +11,8 @@ built, with the raw and the preprocessed spectra.  Per product and ``*PREPROCESS
   windows will fit (after the background, when that is applied), on its
   own: ``lag = s0 + ε·ν``.  ``apply`` relabels the spectrum's wavenumber
   axis, ``ν' = ν − lag(ν)``, so its lines sit where the model puts them;
-  ``nu_shift`` stays free for what is left.  A spectrum that cannot be
-  registered keeps its axis (a warning; its ``nu_shift`` fits the shift).
+  ``shift`` stays free for what is left.  A spectrum that cannot be
+  registered keeps its axis (a warning; its ``shift`` fits the shift).
 
 Every product is per spectrum: nothing needs later spectra, so the same
 steps serve real-time processing.  Only the template is built once per run.
